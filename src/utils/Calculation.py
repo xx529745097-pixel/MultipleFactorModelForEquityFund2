@@ -205,14 +205,20 @@ def basicCal_getCalmarRatio(
 def basicCal_jensen(
         ret_series,                 # series，收益序列
         index_return,               # series,指数收益序列
+        freq='D',                   # freq 'D' or 'W'
         rf = 0.03                   # risk-free rate (annual)
 ):
+    assert freq in ('D', 'W'), "freq must be in ('D', 'W')"
     ret_series.name = 'ret'
     ret_df = ret_series.to_frame()
     index_return.name = 'idx_ret'
     ret_df = ret_df.join(index_return, how = 'inner')
-    ri_minus_rf = ret_df['ret'] - rf/const.const.ANNUAL_SCALE
-    rm_minus_rf = ret_df['idx_ret'] - rf/const.const.ANNUAL_SCALE
+    if freq == 'D':
+        rf = rf / const.const.ANNUAL_SCALE
+    elif freq == 'W':
+        rf = rf / const.const.WEEK_SCALE
+    ri_minus_rf = ret_df['ret'] - rf
+    rm_minus_rf = ret_df['idx_ret'] - rf
     model = LinearRegression().fit(rm_minus_rf.to_numpy().reshape(-1, 1), ri_minus_rf)
     return [model.intercept_, model.coef_[0]]
 
@@ -224,14 +230,20 @@ def basicCal_jensen(
 def basicCal_AlphaGamma(
         ret_series,                 # series，每列一只基金
         index_return,               # series,只含单列
+        freq='D',                   # freq 'D' or 'W'
         rf = 0.03                   # risk-free rate (annual)
 ):
+    assert freq in ('D', 'W'), "freq must be in ('D', 'W')"
     ret_series.name = 'ret'
     ret_df = ret_series.to_frame()
     index_return.name = 'idx_ret'
     ret_df = ret_df.join(index_return, how = 'inner')
-    ri_minus_rf = ret_df['ret'] - rf/const.const.ANNUAL_SCALE
-    rm_minus_rf = ret_df['idx_ret'] - rf/const.const.ANNUAL_SCALE
+    if freq == 'D':
+        rf = rf / const.const.ANNUAL_SCALE
+    elif freq == 'W':
+        rf = rf / const.const.WEEK_SCALE
+    ri_minus_rf = ret_df['ret'] - rf
+    rm_minus_rf = ret_df['idx_ret'] - rf
     rm_minus_rf_squared = rm_minus_rf**2
     independent_variable = pd.DataFrame([rm_minus_rf, rm_minus_rf_squared]).T.values
     model = LinearRegression().fit(independent_variable, ri_minus_rf)

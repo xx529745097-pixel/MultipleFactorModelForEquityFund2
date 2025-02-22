@@ -32,11 +32,11 @@ def wind_connectWindDB():
 # 选取主动权益基金的sql
 # length(a.f_info_windcode)!=10，带！的转型基金(11位)不能去，只把带F的（10位）香港互认基金去掉
 # a.F_INFO_ISINITIAL =1，只考虑初始份额，A份额
-__sql_EquityFund = " from (select * from ChinaMutualFundDescription )a, (select * from ChinaMutualFundManager)b,(select * from ChinaMutualFundSector)c" \
-                   " where a.f_info_windcode=b.f_info_windcode and a.f_info_windcode=c.f_info_windcode and length(a.f_info_windcode)!=10" \
+__sql_EquityFund = " from (select * from ChinaMutualFundDescription )a, (select * from ChinaMutualFundManager)b,(select * from ChinaMutualFundSector)c, (select * from CFundPchRedm)d" \
+                   " where a.f_info_windcode=b.f_info_windcode and a.f_info_windcode=c.f_info_windcode and a.f_info_windcode=d.f_info_windcode and length(a.f_info_windcode)!=10" \
                    " and a.F_INFO_ISINITIAL =1 and length(c.S_INFO_SECTOR)=16 "
-__sql_EquityFundAllShare = " from (select * from ChinaMutualFundDescription )a, (select * from ChinaMutualFundManager)b,(select * from ChinaMutualFundSector)c" \
-                   " where a.f_info_windcode=b.f_info_windcode and a.f_info_windcode=c.f_info_windcode and length(a.f_info_windcode)!=10" \
+__sql_EquityFundAllShare = " from (select * from ChinaMutualFundDescription )a, (select * from ChinaMutualFundManager)b,(select * from ChinaMutualFundSector)c, (select * from CFundPchRedm)d" \
+                   " where a.f_info_windcode=b.f_info_windcode and a.f_info_windcode=c.f_info_windcode and a.f_info_windcode=d.f_info_windcode and length(a.f_info_windcode)!=10" \
                    " and length(c.S_INFO_SECTOR)=16 "
 __sql_EquityFund2 = " and c.S_INFO_SECTOR in {} "
 __sql_orderby = " order by a.f_info_windcode,b.F_INFO_MANAGER_STARTDATE"
@@ -340,7 +340,7 @@ def wind_getHistoricalProductList(
         assert as_of_date is not None, '参数exclude_new_product为True需要参数as_of_date不为None'
     dbconn = wind_connectWindDB()
     sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name," \
-       " a.F_INFO_SETUPDATE as product_start_date,a.F_INFO_MATURITYDATE as product_end_date," \
+       " a.F_INFO_SETUPDATE as product_start_date,a.F_INFO_MATURITYDATE as product_end_date, a.F_INFO_TYPE as fund_open_type, d.F_MINM_HOLDING_PRD as min_holding_month, " \
        " b.F_INFO_MANAGER_GENDER as pm_gender, b.F_INFO_FUNDMANAGER_ID as pm_id, b.F_INFO_FUNDMANAGER as pm_name," \
        " b.F_INFO_MANAGER_STARTDATE as pm_start_date,b.F_INFO_MANAGER_LEAVEDATE as pm_end_date, " \
        " c.S_INFO_SECTOR as type, c.S_INFO_SECTORENTRYDT as sector_start_date, c.S_INFO_SECTOREXITDT as sector_end_date "
@@ -376,6 +376,8 @@ def wind_getHistoricalProductList(
     df_fund['product_end_date'] = pd.to_datetime(df_fund['product_end_date']).dt.date
     df_fund['pm_start_date'] = pd.to_datetime(df_fund['pm_start_date'], format='%Y%m%d').dt.date
     df_fund['pm_end_date'] = pd.to_datetime(df_fund['pm_end_date'], format='%Y%m%d').dt.date
+    df_fund['sector_start_date'] = pd.to_datetime(df_fund['sector_start_date'], format='%Y%m%d').dt.date
+    df_fund['sector_end_date'] = pd.to_datetime(df_fund['sector_end_date'], format='%Y%m%d').dt.date
     if as_of_date is not None:
         if exclude_new_product:
             df_fund = df_fund[df_fund['product_start_date'].apply(lambda x: (as_of_date-x).days > 90)]
@@ -402,7 +404,7 @@ def wind_getCurrentProductList(
     dbconn = wind_connectWindDB()
     sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_FULLNAME as product_full_name, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name, " \
                "a.F_INFO_SETUPDATE as product_start_date, a.F_INFO_MATURITYDATE as product_end_date, a.F_INFO_MANAGEMENTFEERATIO as management_fee, " \
-               "a.F_INFO_CUSTODIANFEERATIO as trustee_fee, a.CRNY_CODE as product_ccy, a.F_INFO_BENCHMARK as product_benchmark_name, " \
+               "a.F_INFO_CUSTODIANFEERATIO as trustee_fee, a.CRNY_CODE as product_ccy, a.F_INFO_BENCHMARK as product_benchmark_name, a.F_INFO_TYPE as fund_open_type, d.F_MINM_HOLDING_PRD as min_holding_month, " \
                "b.F_INFO_MANAGER_GENDER as pm_gender, b.F_INFO_FUNDMANAGER_ID as pm_id, b.F_INFO_FUNDMANAGER as pm_name, " \
                "b.F_INFO_MANAGER_STARTDATE as pm_start_date,b.F_INFO_MANAGER_LEAVEDATE as pm_end_date, c.S_INFO_SECTOR as type "
     sql_cursign = " and c.CUR_SIGN = 1 " # c.CUR_SIGN = 1 分类最新标志
@@ -456,6 +458,26 @@ def wind_getCurrentProductList(
         df_fund = df_fund[df_fund['net_asset'] > 3e7]
     dbconn.close()
     return df_fund
+
+# ------------------------------------------------------
+# 获取当前存续基金暂停申购赎回信息
+# ------------------------------------------------------
+def wind_getCurrentProductSuspendInfo(
+    start_date,   # datetime.date, 起始日期
+    end_date      # datetime.date, 截止日期
+):
+    assert isinstance(start_date, datetime.date), "start_date需为datetime.date类型"
+    assert isinstance(end_date, datetime.date), "end_date需为datetime.date类型"
+    dbconn = wind_connectWindDB()
+    sql = "select a.S_INFO_WINDCODE as product_id, a.F_INFO_SUSPCHSTARTDT as suspend_start_date, a.F_INFO_SUSPCHANNDT as suspend_start_ann_date, " \
+          "a.F_INFO_REPCHDT as suspend_end_date,a.F_INFO_REPCHANNDT as suspend_end_ann_date, a.F_INFO_PURCHASEUPLIMIT as trade_limit, " \
+          "a.F_INFO_SUSPCHREASON as suspend_reason, a.F_INFO_SUSPCHTYPE as suspend_type_code " \
+          "from ChinaMutualFundSuspendPchRedm a, ChinaMutualFundDescription b " \
+          "where a.S_INFO_WINDCODE=b.F_INFO_WINDCODE and b.F_INFO_STATUS='101001000' " \
+          "and a.F_INFO_SUSPCHSTARTDT <= {} and (a.F_INFO_REPCHDT is null or a.F_INFO_REPCHDT >= {}) "
+    ret = pd.read_sql_query(sql.format(end_date.strftime('%Y%m%d'), start_date.strftime('%Y%m%d')), dbconn).rename(columns=str.lower)
+    dbconn.close()
+    return ret
 
 # ------------------------------------------------------
 # 获取券商理财产品列表
@@ -1556,6 +1578,8 @@ def wind_getBondCurve(
 # 获取基金的资产配置信息
 # ------------------------------------------------------
 def wind_getMFAssetAllocation(
+        start_date=None,         # 起始日期, datetime.date
+        end_date=None,           # 截止日期, datetime.date
         product_ids=None,   # product_ids基金代码，应为list格式（因数据库存储问题，优先使用场内代码），为None时，相当于获取全部基金
         companies=None,     # 基金公司简称，list格式，如果company有赋值，则返回该公司旗下所有基金的数据，忽略product_ids变量的任何赋值
         only_a_share=True,  # 是否只取A份额，默认为是
@@ -1571,6 +1595,8 @@ def wind_getMFAssetAllocation(
           "a.F_PRT_HKSTOCKVALUE as product_hkstk_value, a.F_PRT_HKSTOCKTONAV as product_hkstk_value_to_nav " \
           "from ChinaMutualFundAssetPortfolio a, ChinaMutualFundDescription b " \
             "where a.S_INFO_WINDCODE = b.F_INFO_WINDCODE "
+    if start_date is not None and end_date is not None:
+        sql_1 += "and a.F_PRT_ENDDATE >= '{}' and a.F_PRT_ENDDATE <= '{}' ".format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
     if only_a_share:
         sql_1 += "and b.F_INFO_ISINITIAL = 1 "
     sql_codes = "and a.S_INFO_WINDCODE in {} "
@@ -1867,17 +1893,16 @@ def wind_getStockIndexComponentWeight(
 # 获取公募基金的最新规模，与wind界面上展示的数字一致
 # --------------------------------------------------------------------------------------------------------------------
 def wind_getMFLatestAUM(
-    date,               # datetime.date格式，取该日期前最新的持仓数据
+    start_date,         # datetime.date格式，起始日期
+    end_date,           # datetime.date格式，截止日期
     product_id=None,    # 默认取全量的，不会很慢，优先输入基金场内代码（如有）
 ):
     dbconn = wind_connectWindDB()
-    # 设置取数日期范围，优化取数速度
-    year = str(date.year - 1)  # 优化取数速度
     sql_2 = "select PRICE_DATE as data_date, F_INFO_WINDCODE as product_id, NETASSET_TOTAL as aum from ChinaMutualFundNAV " \
-            "where NETASSET_TOTAL is not null and PRICE_DATE >= '" + year + "0101'"
-    aum = pd.read_sql_query(sql_2, dbconn)
+            "where NETASSET_TOTAL is not null and PRICE_DATE >= '{}' and PRICE_DATE <= '{}' "
+    aum = pd.read_sql_query(sql_2.format(start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")), dbconn)
     dbconn.close()
-    aum = aum.sort_values('data_date').groupby(['product_id'], as_index=False)['data_date', 'aum'].last()
+    aum = aum.sort_values('data_date').groupby(['product_id'], as_index=False)[['data_date', 'aum']].last()
     if product_id:
         aum = aum[aum['product_id'].isin(product_id)]
     return aum

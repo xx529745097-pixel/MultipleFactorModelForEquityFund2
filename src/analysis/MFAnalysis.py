@@ -1140,19 +1140,23 @@ def anlsMF_SelectedRatingIndicator(
         product_ids,                                    # list
         startdate,                                      # datetime.date
         enddate,                                        # datetime.date
+        freq='D',                                       # freq, 'D' or 'W'
         benchmark = '000300.SH',                        # benchmark, str.
         rf = 0.03                                       # risk-free rate (annual)
 ):
-    retDf = wind_getMFSingleStats(product_ids, startdate, enddate)
-    idxret = wind_getIndexReturn(benchmark, startdate, enddate, 'D')
-    retDf = retDf.fillna(0)   # 部分封闭期基金只披露周度净值，处理nan项。
+    retDf = wind_getMFStats(product_ids, startdate-relativedelta(weeks=4), enddate, ['f_avgreturn_day'])
+    if freq == 'W':  # convert to weekly freq
+        retDf = fof_calendar.calender_convertDailyReturnToWeekly(retDf, date_column_name='date', return_column_name='f_avgreturn_day', id_column_name='product_id')
+    retDf = pd.pivot_table(retDf, values='f_avgreturn_day', index='date', columns='product_id').loc[startdate:enddate]
+    retDf = retDf.fillna(0)  # 部分封闭期基金只披露周度净值，处理nan项。
+    idxret = wind_getIndexReturn(benchmark, startdate, enddate, freq)
     regression_result = pd.DataFrame(columns = [*product_ids], index = ['jensen', 'alpha', 'gamma', 'sharpe'])
     for product in product_ids:
-        regression_result.loc['jensen', product] = basicCal_jensen(retDf[product], idxret, rf)[0]
-        [alpha, beta, gamma] = basicCal_AlphaGamma(retDf[product], idxret, rf)
+        regression_result.loc['jensen', product] = basicCal_jensen(retDf[product], idxret, freq, rf)[0]
+        [alpha, beta, gamma] = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)
         regression_result.loc['alpha', product] = alpha
         regression_result.loc['gamma', product] = gamma
-        regression_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], 'D', rf)
+        regression_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
     regression_result = regression_result.T.reset_index()
     regression_result = regression_result.rename({'index':'product_id'}, axis = 1)
     regression_result.rename(columns = {'index':'factor'}, inplace=True)
@@ -1167,25 +1171,13 @@ def anlsMF_RankStability(
         startdate,      # datetime.date
         enddate,        # datetime.date
 ):
-    Fridays = fof_calendar.calendar_getFridays(startdate, enddate)
-    def toPercentage(series):
-        returntxt = []
-        for str in series:
-            if str is None:
-                returntxt.append('无数据')
-            else:
-                returntxt.append('{:.2%}'.format(int(str.split('/')[0]) / int(str.split('/')[1])))
-        return returntxt
-    MFRanking = wind_getMFStats(product_ids, startdate, enddate, ['F_SFRANK_RECENTWEEKT'])
-    MFRanking = MFRanking.merge(Fridays, on = 'date', how = 'inner')
-    MFRanking['rank_1w'] = MFRanking[['f_sfrank_recentweekt']].apply(toPercentage)
-    MFRanking.drop('f_sfrank_recentweekt', axis = 1, inplace = True)
-    MFRanking.replace('无数据', '50.00%', inplace=True)  # 某些沪港深基金或其他原因在某时刻没有排名数据，替换为50%
-    MFRanking['stability'] = MFRanking['rank_1w'].apply(lambda x: float(x[:-1]))
-    Stability = MFRanking.groupby('product_id').mean() / MFRanking.groupby('product_id').std()
-    Stability = Stability.rank(pct = True, ascending = False)
-    Stability = Stability.reset_index()
-    return Stability
+    product_ret = wind_getMFStats(product_ids, startdate-relativedelta(weeks=4), enddate, ['f_avgreturn_day'])
+    product_ret = fof_calendar.calender_convertDailyReturnToWeekly(product_ret, date_column_name='date', return_column_name='f_avgreturn_day', id_column_name='product_id')
+    product_ret_pivot = pd.pivot_table(product_ret, values='f_avgreturn_day', index='date', columns='product_id').loc[startdate:enddate]
+    weekly_ret_rank = product_ret_pivot.T.rank(pct=True, ascending=True)
+    weekly_ret_rank['stability'] = weekly_ret_rank.mean(axis=1) / weekly_ret_rank.std(axis=1)
+    stability = weekly_ret_rank[['stability']].rank(pct=True, ascending=True).reset_index()
+    return stability
 
 # ------------------------------------------------
 # 基金评级底层计算函数
