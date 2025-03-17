@@ -165,11 +165,11 @@ if __name__ == '__main__':
         single_period_shortlist_res = pd.read_excel(fstrat_config.cc30_shortlist_res_path.format(row['model_date']), index_col=0)
         single_period_shortlist_res['effective_date'] = row['effective_date']
         single_period_shortlist_res_pivot = pd.pivot_table(single_period_shortlist_res, values='weight', index='effective_date', columns='product_id')
-        single_period_ret = wind.wind_getMFStats(single_period_shortlist_res['product_id'].to_list(), row['effective_date'],
-                                                 row['next_effective_date'] - datetime.timedelta(days=1), stats=['f_avgreturn_day'])
-        single_period_ret_pivot = pd.pivot_table(single_period_ret, values='f_avgreturn_day', index='date', columns='product_id')
+        single_period_nav = wind.wind_getMFNav(row['effective_date'] - datetime.timedelta(days=1), row['next_effective_date'], product_id=single_period_shortlist_res['product_id'].to_list()).sort_values(['product_id', 'date'])
+        single_period_nav['nav_adjusted'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.fillna(method='ffill'))
+        single_period_nav['ret'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.diff() / x.shift(1))
+        single_period_ret_pivot = pd.pivot_table(single_period_nav, values='ret', index='date', columns='product_id')
         single_period_port_ret_series = bt.backtest_calPortfolioReturnSeries(single_period_ret_pivot, single_period_shortlist_res_pivot)
         port_ret_series_list.append(single_period_port_ret_series)
     port_ret_series = pd.concat(port_ret_series_list, axis=0)
     port_ret_series.to_frame().to_excel(f'./收益回测序列{port_ret_series.index.min()}_{port_ret_series.index.max()}.xlsx')
-
