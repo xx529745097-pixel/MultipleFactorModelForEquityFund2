@@ -22,7 +22,7 @@ def backtest_calPortfolioReturnSeries(
     weight_df = weight_df[ret_df.columns]  # 保证ret_df和weight_df资产排序一致
     weight_df = weight_df.add_suffix('_weight')
     # 合并数据，整合日期index，从第一个调仓权重生效日开始回测
-    backtest_df = ret_df.join(weight_df, how='left').loc[weight_df.index.min():, :]  # 默认从第一个调仓日期开始回测
+    backtest_df = ret_df.join(weight_df, how='left').loc[weight_df.index.min():, :]  # 默认从第一个调仓生效日期开始回测
     if backtest_df.empty:
         return pd.Series()
     # 填充缺失的资产收益为0，可能存在不同资产交易日不完全对齐的情况

@@ -1035,6 +1035,25 @@ def anlsMF_getMFStockHoldingSimulatedDailyReturn(
     product_sim_ret = pd.merge(product_info[['product_id', 'product_name', 'pm_name']], product_sim_ret, on='product_id', how='right')
     return product_sim_ret
 
+# -------------------------------------------
+# 公募基金经理调研数量变动指标
+# -------------------------------------------
+def anlsMF_getMFDeltaSurveyIndicator(
+    date,              # datetime.date, 考察日期
+    tracked_months=6   # 回看区间长度，默认6个月
+):
+    assert isinstance(date, datetime.date), "date需为datetime.date类型"
+    mf_info = wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)
+    institution_survey_info_current = wind_getMFInstitutionSurvey(date - relativedelta(months=tracked_months), date)
+    analyst_survey_times_current = institution_survey_info_current.groupby(['analyst_id'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'current_times'})
+    institution_survey_info_previous = wind_getMFInstitutionSurvey(date - relativedelta(months=2*tracked_months), date - relativedelta(months=tracked_months) - relativedelta(days=1))
+    analyst_survey_times_previous = institution_survey_info_previous.groupby(['analyst_id'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'previous_times'})
+    analyst_survey_times = pd.merge(analyst_survey_times_current, analyst_survey_times_previous, on='analyst_id', how='outer').fillna(0)  # 填充无调研产生的空值
+    analyst_survey_times['delta_survey'] = analyst_survey_times['current_times'] - analyst_survey_times['previous_times']
+    mf_info = pd.merge(mf_info, analyst_survey_times, left_on='pm_id', right_on='analyst_id')
+    delta_survey_indicator = mf_info.groupby(['product_id'], as_index=False).agg({'delta_survey': 'mean'})  # 取各PM均值
+    return delta_survey_indicator
+
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # 4. 基金分类
@@ -1150,17 +1169,28 @@ def anlsMF_SelectedRatingIndicator(
     retDf = pd.pivot_table(retDf, values='f_avgreturn_day', index='date', columns='product_id').loc[startdate:enddate]
     retDf = retDf.fillna(0)  # 部分封闭期基金只披露周度净值，处理nan项。
     idxret = wind_getIndexReturn(benchmark, startdate, enddate, freq)
-    regression_result = pd.DataFrame(columns = [*product_ids], index = ['jensen', 'alpha', 'gamma', 'sharpe'])
+    # 以end_date作为考察时点
+    latest_aum_info = wind_getMFLatestAUM(startdate, enddate)
+    # 以end_date作为考察时点的6个月调研数量变动因子
+    delta_survey_6m = anlsMF_getMFDeltaSurveyIndicator(enddate, tracked_months=6)
+    # 以end_date作为考察时点的最新员工自购比例
+    employee_holding_ratio = wind_getMFLatestHoldingStructure(enddate)[['date', 'product_id', 'employee_holding_ratio']]
+    employee_holding_ratio['employee_holding_ratio'] = employee_holding_ratio['employee_holding_ratio'].fillna(0)  # 缺失值填充为0
+    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen', 'alpha', 'gamma', 'sharpe', 'mdd_1y', 'size', 'delta_survey_6m', 'employee_holding_ratio'])
     for product in product_ids:
-        regression_result.loc['jensen', product] = basicCal_jensen(retDf[product], idxret, freq, rf)[0]
-        [alpha, beta, gamma] = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)
-        regression_result.loc['alpha', product] = alpha
-        regression_result.loc['gamma', product] = gamma
-        regression_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
-    regression_result = regression_result.T.reset_index()
-    regression_result = regression_result.rename({'index':'product_id'}, axis = 1)
-    regression_result.rename(columns = {'index':'factor'}, inplace=True)
-    return regression_result
+        indicator_result.loc['jensen', product] = basicCal_jensen(retDf[product], idxret, freq, rf)[0]  # CAPM Model
+        [alpha, beta, gamma] = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)  # TM Model
+        indicator_result.loc['alpha', product] = alpha
+        indicator_result.loc['gamma', product] = gamma
+        indicator_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
+        indicator_result.loc['mdd_1y', product] = basicCal_getMaxDrawdown(retDf[product])
+        indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
+        indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]
+        indicator_result.loc['employee_holding_ratio', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['employee_holding_ratio'].iloc[0]
+    indicator_result = indicator_result.T.reset_index()
+    indicator_result = indicator_result.rename({'index':'product_id'}, axis = 1)
+    indicator_result.rename(columns = {'index':'factor'}, inplace=True)
+    return indicator_result
 
 # ------------------------------------------------
 # 计算基金的稳定度。数值越大，稳定性越好。

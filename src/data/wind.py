@@ -317,6 +317,27 @@ def wind_getAShareDividendInfo(
     dbconn.close()
     return df
 
+# -----------------------------------
+# 获取机构调研上市公司信息
+# -----------------------------------
+def wind_getMFInstitutionSurvey(
+    start_date,   # 起始日期
+    end_date      # 截止日期
+):
+    assert isinstance(start_date, datetime.date), "start_date需为datetime.date类型"
+    assert isinstance(end_date, datetime.date), "end_date需为datetime.date类型"
+    dbconn = wind_connectWindDB()
+    sql = "select a.EVENT_ID as event_id, b.S_INFO_WINDCODE as stock_id, b.S_SURVEYDATE as dt, b.S_ACTIVITIESTYPE as survey_type, " \
+          "a.S_INSTITUTIONCODE as company_id, c.S_SNAME as company_name, a.S_ANALYST_ID as analyst_id, a.S_ANALYSTNAME as analyst_name " \
+          "from AShareISParticipant a, AshareISActivity b, CompOrganizationcode c where a.EVENT_ID = b.EVENT_ID and a.S_INSTITUTIONCODE = c.COMP_ID " \
+          "and b.S_SURVEYDATE >= '{}' and b.S_SURVEYDATE <= '{}' "
+    df = pd.read_sql_query(sql.format(start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')), dbconn).rename(columns=str.lower)
+    dbconn.close()
+    df.rename(columns={'dt': 'date'}, inplace=True)
+    # FIXME 底层数据不规范，存在只有月份的六位日期，无法自动转换成datetime类型，暂保留原始字符串
+    # df['date'] = pd.to_datetime(df['date']).dt.date
+    return df
+
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # 2. 基金Ref函数
@@ -794,6 +815,25 @@ def wind_getMFRelatedProductMap():
           "where a.S_RELATION_TYPCODE='115002101' and a.S_INFO_INVALID_DT is null "
     df = pd.read_sql_query(sql, dbconn).rename(columns=str.lower)
     dbconn.close()
+    return df
+
+# ----------------------------
+# 获取公募基金持有人结构
+# ----------------------------
+def wind_getMFLatestHoldingStructure(
+    date   # 考察日期
+):
+    assert isinstance(date, datetime.date), "date需为datetime.date类型"
+    dbconn = wind_connectWindDB()
+    sql = "select S_INFO_WINDCODE as product_id, END_DT as dt, SCOPE as scope, HOLDER_NUMBER as holder_num, HOLDER_AVGHOLDING as avg_holding_share, " \
+           "HOLDER_INSTITUTION_HOLDING as institution_holding_share, HOLDER_INSTITUTION_HOLDINGPCT as institution_holding_ratio, HOLDER_PERSONAL_HOLDING as retail_holding_share, " \
+           "HOLDER_PERSONAL_HOLDINGPCT as retail_holding_ratio, HOLDER_MNGEMP_HOLDING as employee_holding_share, HOLDER_MNGEMP_HOLDINGPCT as employee_holding_ratio " \
+           "from CMFHolderStructure where END_DT >= '{}' and END_DT <= '{}' "
+    df = pd.read_sql_query(sql.format(date - datetime.timedelta(days=270), date), dbconn).rename(columns=str.lower)
+    dbconn.close()
+    df.rename(columns={'dt': 'date'}, inplace=True)
+    df['date'] = pd.to_datetime(df['date']).dt.date
+    df = df.groupby(['product_id'], as_index=False).apply(lambda x: x[x['date'] == x['date'].max()])
     return df
 
 # -----------------------------------------------------------------------------

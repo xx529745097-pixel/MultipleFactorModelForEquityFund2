@@ -90,7 +90,7 @@ def fstrat_getCC30ProductScore(
     benchmark='000906.SH',  # 指标计算基准
     rf=0.03            # 无风险利率
 ):
-    product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, anls_end_date, 'W', benchmark, rf)  # 因子底层使用周频收益计算
+    product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, anls_end_date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
     indicator_score = product_indicator_info.set_index('product_id').rank(pct=True, ascending=True).reset_index()   # 将因子值转化为排名，越大表现越好。
     weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, anls_end_date)   # 周度收益率的排名稳定性
     product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
@@ -144,7 +144,7 @@ def fstrat_getCC30ModelResult(
 
 if __name__ == '__main__':
     # 模型回溯区间
-    model_start_date = datetime.date(2014, 1, 30)
+    model_start_date = datetime.date(2023, 1, 1)
     model_end_date = datetime.date(2025, 2, 28)
     # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
     adj_calendar = fstrat_getAdjustmentCalendar(freq='Q')
