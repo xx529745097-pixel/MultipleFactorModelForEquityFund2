@@ -829,7 +829,7 @@ def wind_getMFLatestHoldingStructure(
            "HOLDER_INSTITUTION_HOLDING as institution_holding_share, HOLDER_INSTITUTION_HOLDINGPCT as institution_holding_ratio, HOLDER_PERSONAL_HOLDING as retail_holding_share, " \
            "HOLDER_PERSONAL_HOLDINGPCT as retail_holding_ratio, HOLDER_MNGEMP_HOLDING as employee_holding_share, HOLDER_MNGEMP_HOLDINGPCT as employee_holding_ratio " \
            "from CMFHolderStructure where END_DT >= '{}' and END_DT <= '{}' "
-    df = pd.read_sql_query(sql.format(date - datetime.timedelta(days=270), date), dbconn).rename(columns=str.lower)
+    df = pd.read_sql_query(sql.format((date - datetime.timedelta(days=270)).strftime('%Y%m%d'), date.strftime('%Y%m%d')), dbconn).rename(columns=str.lower)
     dbconn.close()
     df.rename(columns={'dt': 'date'}, inplace=True)
     df['date'] = pd.to_datetime(df['date']).dt.date

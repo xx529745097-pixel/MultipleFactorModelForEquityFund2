@@ -1172,24 +1172,29 @@ def anlsMF_SelectedRatingIndicator(
     # 以end_date作为考察时点
     latest_aum_info = wind_getMFLatestAUM(startdate, enddate)
     # 以end_date作为考察时点的6个月调研数量变动因子
-    delta_survey_6m = anlsMF_getMFDeltaSurveyIndicator(enddate, tracked_months=6)
+    delta_survey_6m_data = anlsMF_getMFDeltaSurveyIndicator(enddate, tracked_months=6)
+    delta_survey_6m = pd.DataFrame(product_ids, columns=['product_id'])
+    delta_survey_6m = pd.merge(delta_survey_6m, delta_survey_6m_data[['product_id', 'delta_survey']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
     # 以end_date作为考察时点的最新员工自购比例
-    employee_holding_ratio = wind_getMFLatestHoldingStructure(enddate)[['date', 'product_id', 'employee_holding_ratio']]
-    employee_holding_ratio['employee_holding_ratio'] = employee_holding_ratio['employee_holding_ratio'].fillna(0)  # 缺失值填充为0
-    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen', 'alpha', 'gamma', 'sharpe', 'mdd_1y', 'size', 'delta_survey_6m', 'employee_holding_ratio'])
+    employee_holding_ratio_data = wind_getMFLatestHoldingStructure(enddate)
+    employee_holding_ratio = pd.DataFrame(product_ids, columns=['product_id'])
+    employee_holding_ratio = pd.merge(employee_holding_ratio, employee_holding_ratio_data[['product_id', 'employee_holding_ratio']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
+    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen_beta', 'jensen_alpha', 'TM_gamma', 'sharpe', 'mdd', 'size', 'delta_survey_6m', 'employee_holding_ratio'])
     for product in product_ids:
-        indicator_result.loc['jensen', product] = basicCal_jensen(retDf[product], idxret, freq, rf)[0]  # CAPM Model
-        [alpha, beta, gamma] = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)  # TM Model
-        indicator_result.loc['alpha', product] = alpha
-        indicator_result.loc['gamma', product] = gamma
+        jensen_beta, jensen_alpha = basicCal_jensen(retDf[product], idxret, freq, rf)  # CAPM Model
+        indicator_result.loc['jensen_beta', product] = jensen_beta
+        indicator_result.loc['jensen_alpha', product] = jensen_beta
+        tm_alpha, tm_beta, tm_gamma = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)  # TM Model
+        indicator_result.loc['TM_gamma', product] = tm_gamma
+        indicator_result.loc['TM_alpha', product] = tm_alpha
         indicator_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
-        indicator_result.loc['mdd_1y', product] = basicCal_getMaxDrawdown(retDf[product])
+        indicator_result.loc['mdd', product] = basicCal_getMaxDrawdown(retDf[product])
         indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
         indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]
-        indicator_result.loc['employee_holding_ratio', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['employee_holding_ratio'].iloc[0]
+        indicator_result.loc['employee_holding_ratio', product] = employee_holding_ratio[employee_holding_ratio['product_id'] == product]['employee_holding_ratio'].iloc[0]
     indicator_result = indicator_result.T.reset_index()
-    indicator_result = indicator_result.rename({'index':'product_id'}, axis = 1)
-    indicator_result.rename(columns = {'index':'factor'}, inplace=True)
+    indicator_result = indicator_result.rename({'index': 'product_id'}, axis=1)
+    indicator_result.rename(columns={'index': 'factor'}, inplace=True)
     return indicator_result
 
 # ------------------------------------------------

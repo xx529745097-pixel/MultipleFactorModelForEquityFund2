@@ -94,7 +94,11 @@ def fstrat_getCC30ProductScore(
     indicator_score = product_indicator_info.set_index('product_id').rank(pct=True, ascending=True).reset_index()   # 将因子值转化为排名，越大表现越好。
     weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, anls_end_date)   # 周度收益率的排名稳定性
     product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
-    product_score['score'] = 0.2*product_score['jensen'] + 0.4*product_score['sharpe'] + 0.1*product_score['gamma'] + 0.1*product_score['alpha'] + 0.2*product_score['stability']
+    # JW30
+    product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
+     + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
+    # # CC30
+    # product_score['score'] = 0.2*product_score['jensen_beta'] + 0.4*product_score['sharpe'] + 0.1*product_score['TM_gamma'] + 0.1*product_score['TM_alpha'] + 0.2*product_score['stability']
     product_score['score'] = product_score['score'].rank(pct=True, ascending=True)
     product_score.sort_values('score', ascending=False, inplace=True)
     return product_score
@@ -144,7 +148,7 @@ def fstrat_getCC30ModelResult(
 
 if __name__ == '__main__':
     # 模型回溯区间
-    model_start_date = datetime.date(2023, 1, 1)
+    model_start_date = datetime.date(2014, 1, 1)
     model_end_date = datetime.date(2025, 2, 28)
     # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
     adj_calendar = fstrat_getAdjustmentCalendar(freq='Q')
@@ -165,7 +169,8 @@ if __name__ == '__main__':
         single_period_shortlist_res = pd.read_excel(fstrat_config.cc30_shortlist_res_path.format(row['model_date']), index_col=0)
         single_period_shortlist_res['effective_date'] = row['effective_date']
         single_period_shortlist_res_pivot = pd.pivot_table(single_period_shortlist_res, values='weight', index='effective_date', columns='product_id')
-        single_period_nav = wind.wind_getMFNav(row['effective_date'] - datetime.timedelta(days=1), row['next_effective_date'], product_id=single_period_shortlist_res['product_id'].to_list()).sort_values(['product_id', 'date'])
+        # 向前多取一些，保证取到上一交易日的净值
+        single_period_nav = wind.wind_getMFNav(row['effective_date'] - datetime.timedelta(days=14), row['next_effective_date'], product_id=single_period_shortlist_res['product_id'].to_list()).sort_values(['product_id', 'date'])
         single_period_nav['nav_adjusted'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.fillna(method='ffill'))
         single_period_nav['ret'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.diff() / x.shift(1))
         single_period_ret_pivot = pd.pivot_table(single_period_nav, values='ret', index='date', columns='product_id')
