@@ -1042,15 +1042,28 @@ def anlsMF_getMFDeltaSurveyIndicator(
     date,              # datetime.date, 考察日期
     tracked_months=6   # 回看区间长度，默认6个月
 ):
+
     assert isinstance(date, datetime.date), "date需为datetime.date类型"
     mf_info = wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)
+    # 仅保留在date日期的板块分类和现任的pm
+    mf_info = mf_info[((mf_info['pm_start_date'] <= date) & ((mf_info['pm_end_date'] >= date) | (mf_info['pm_end_date'].isna())))
+                      & ((mf_info['sector_start_date'] <= date) & ((mf_info['sector_end_date'] >= date) | (mf_info['sector_end_date'].isna())))]
+    # FIXME 由于数据源质量较差，经实践发现使用analyst id进行匹配会造成缺漏，故因子实现上使用公司简称+基金经理姓名进行匹配
+    def get_AuxCompPmStr(company_name):
+        for i in range(len(company_name)-1):
+            if company_name[i:i+2] == '基金':
+                return company_name[:i]
+        return 'NotFundCompany'  # 对于非基金公司，统一标识为'NotFundCompany'
+    mf_info['aux_comp_pm_str'] = mf_info['company_short_name'].apply(get_AuxCompPmStr) + '_' + mf_info['pm_name']
     institution_survey_info_current = wind_getMFInstitutionSurvey(date - relativedelta(months=tracked_months), date)
-    analyst_survey_times_current = institution_survey_info_current.groupby(['analyst_id'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'current_times'})
+    institution_survey_info_current['aux_comp_pm_str'] = institution_survey_info_current['company_name'].fillna('').apply(get_AuxCompPmStr) + '_' + institution_survey_info_current['analyst_name'].fillna('')
+    analyst_survey_times_current = institution_survey_info_current.groupby(['aux_comp_pm_str'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'current_times'})
     institution_survey_info_previous = wind_getMFInstitutionSurvey(date - relativedelta(months=2*tracked_months), date - relativedelta(months=tracked_months) - relativedelta(days=1))
-    analyst_survey_times_previous = institution_survey_info_previous.groupby(['analyst_id'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'previous_times'})
-    analyst_survey_times = pd.merge(analyst_survey_times_current, analyst_survey_times_previous, on='analyst_id', how='outer').fillna(0)  # 填充无调研产生的空值
+    institution_survey_info_previous['aux_comp_pm_str'] = institution_survey_info_previous['company_name'].fillna('').apply(get_AuxCompPmStr) + '_' + institution_survey_info_previous['analyst_name'].fillna('')
+    analyst_survey_times_previous = institution_survey_info_previous.groupby(['aux_comp_pm_str'], as_index=False).agg({'event_id': 'count'}).rename(columns={'event_id': 'previous_times'})
+    analyst_survey_times = pd.merge(analyst_survey_times_current, analyst_survey_times_previous, on='aux_comp_pm_str', how='outer').fillna(0)  # 填充无调研产生的空值
     analyst_survey_times['delta_survey'] = analyst_survey_times['current_times'] - analyst_survey_times['previous_times']
-    mf_info = pd.merge(mf_info, analyst_survey_times, left_on='pm_id', right_on='analyst_id')
+    mf_info = pd.merge(mf_info, analyst_survey_times, on='aux_comp_pm_str', how='left')
     delta_survey_indicator = mf_info.groupby(['product_id'], as_index=False).agg({'delta_survey': 'mean'})  # 取各PM均值
     return delta_survey_indicator
 
@@ -1181,14 +1194,14 @@ def anlsMF_SelectedRatingIndicator(
     employee_holding_ratio = pd.merge(employee_holding_ratio, employee_holding_ratio_data[['product_id', 'employee_holding_ratio']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
     indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen_beta', 'jensen_alpha', 'TM_gamma', 'sharpe', 'mdd', 'size', 'delta_survey_6m', 'employee_holding_ratio'])
     for product in product_ids:
-        jensen_beta, jensen_alpha = basicCal_jensen(retDf[product], idxret, freq, rf)  # CAPM Model
+        jensen_alpha, jensen_beta = basicCal_jensen(retDf[product], idxret, freq, rf)  # CAPM Model
         indicator_result.loc['jensen_beta', product] = jensen_beta
-        indicator_result.loc['jensen_alpha', product] = jensen_beta
+        indicator_result.loc['jensen_alpha', product] = jensen_alpha
         tm_alpha, tm_beta, tm_gamma = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)  # TM Model
         indicator_result.loc['TM_gamma', product] = tm_gamma
         indicator_result.loc['TM_alpha', product] = tm_alpha
         indicator_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
-        indicator_result.loc['mdd', product] = basicCal_getMaxDrawdown(retDf[product])
+        indicator_result.loc['mdd', product] = abs(basicCal_getMaxDrawdown(retDf[product]))  # 使用mdd绝对值，反向指标
         indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
         indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]
         indicator_result.loc['employee_holding_ratio', product] = employee_holding_ratio[employee_holding_ratio['product_id'] == product]['employee_holding_ratio'].iloc[0]

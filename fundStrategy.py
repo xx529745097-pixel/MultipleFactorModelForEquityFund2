@@ -73,60 +73,87 @@ def fstrat_getCC30EquityMFPool(
     mf_info = mf_info[~mf_info['product_id'].isin(suspend_info['product_id'])]
     # 加入日期
     mf_info['date'] = date
-    # 若不加入pm信息，则对产品去重
-    if include_pm_info:
-        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
-    else:
-        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum']].drop_duplicates().sort_values('product_id')
+    # 加入pm信息，不对产品去重
+    fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
 
-# --------------------------------------
-# 获取CC30模型的打分结果
-# ---------------------------------------
+# -----------------------------------------
+# 因子计算模块 获取模型因子得分并缓存
+# -----------------------------------------
 def fstrat_getCC30ProductScore(
-    product_ids,        # 基金范围
-    anls_start_date,    # 历史业绩分析起始日期
-    anls_end_date,      # 历史业绩分析截止日期
+    date,                   # 考察日期
+    model_freq='Q',             # 模型调仓频率 决定了模型的运行日期
     benchmark='000906.SH',  # 指标计算基准
-    rf=0.03            # 无风险利率
+    rf=0.03,                # 无风险利率
 ):
-    product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, anls_end_date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
+    # 计算最近两次模型运行日期
+    adj_calendar = fstrat_getAdjustmentCalendar(freq=model_freq)
+    assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
+    anls_start_date = date - datetime.timedelta(days=365)
+    # 获取基金池和当期模型打分并缓存
+    fund_universe = fstrat_getCC30EquityMFPool(date, include_pm_info=True)
+    # 缓存基金池 数据带PM不去重
+    fund_universe.to_excel(fstrat_config.cc30_fund_universe_path.format(date), index=None)
+    # 因子计算
+    product_ids = fund_universe['product_id'].unique().tolist()
+    product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
     indicator_score = product_indicator_info.set_index('product_id').rank(pct=True, ascending=True).reset_index()   # 将因子值转化为排名，越大表现越好。
-    weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, anls_end_date)   # 周度收益率的排名稳定性
+    weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, date)   # 周度收益率的排名稳定性
     product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
+    # 缓存因子打分
+    product_score.to_excel(fstrat_config.cc30_fund_score_path.format(date), index=None)
+    return product_score
+
+# -----------------------------------------
+# 回测缓存CC30模型的最终产品清单
+# 设置缓冲池，每位PM仅保留一个产品
+# -----------------------------------------
+def fstrat_getCC30ModelFinalProductList(
+    date,              # 考察日期 需为模型运行日期
+    model_freq='Q',    # 模型调仓频率 决定了模型的运行日期
+    shortlist_num=30,  # 模型最终输出的产品个数
+    buffer_size=90     # 缓冲池大小
+):
+    # 计算最近两次模型运行日期
+    adj_calendar = fstrat_getAdjustmentCalendar(freq=model_freq)
+    assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
+    previous_model_date = adj_calendar[adj_calendar['model_date'] < date]['model_date'].iloc[-1]
+
+    # -------------------
+    # 读取上一期最终名单
+    # -------------------
+    previous_shortlist_res_path = fstrat_config.cc30_shortlist_res_path.format(previous_model_date)
+    assert os.path.exists(previous_shortlist_res_path), f"未找到{previous_shortlist_res_path}，请先缓存上一期最终名单"  # 需要取到上一期结果得到缓冲池产品
+    previous_shortlist_res = pd.read_excel(previous_shortlist_res_path, index_col=0)[['product_id']].reset_index().rename(columns={'index': 'previous_index'})
+
+    # -------------------------
+    # 读取当期基金池 包含多行pm信息
+    # -------------------------
+    fund_universe_path = fstrat_config.cc30_fund_universe_path.format(date)
+    assert os.path.exists(fund_universe_path), f"未找到{fund_universe_path}，请先缓存当期基金池结果"  # 需要取到当期的打分结果
+    fund_universe = pd.read_excel(fund_universe_path)
+    fund_universe['date'] = pd.to_datetime(fund_universe['date']).dt.date
+
+    # -------------------
+    # 读取当期的打分结果
+    # -------------------
+    current_fund_score_path = fstrat_config.cc30_fund_score_path.format(date)
+    assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"  # 需要取到当期的打分结果
+    product_score = pd.read_excel(current_fund_score_path)
+
+    # -------------------
+    # 模型策略部分 因子权重
+    # -------------------
     # JW30
     product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
      + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
     # # CC30
     # product_score['score'] = 0.2*product_score['jensen_beta'] + 0.4*product_score['sharpe'] + 0.1*product_score['TM_gamma'] + 0.1*product_score['TM_alpha'] + 0.2*product_score['stability']
-    product_score['score'] = product_score['score'].rank(pct=True, ascending=True)
     product_score.sort_values('score', ascending=False, inplace=True)
-    return product_score
 
-# -----------------------------------------
-# 获取CC30模型的最终模型输出的产品清单
-# 设置缓冲池，每位PM仅保留一个产品
-# -----------------------------------------
-def fstrat_getCC30ModelResult(
-    date,                   # 考察日期
-    benchmark='000906.SH',  # 指标计算基准
-    rf=0.03,                # 无风险利率
-    shortlist_num=30,       # 模型最终输出的产品个数
-    buffer_size=90          # 缓冲池大小
-):
-    # 计算最近两次模型运行日期，取出上一期CC30名单缓存文件
-    adj_calendar = fstrat_getAdjustmentCalendar(freq='Q')
-    current_model_date = adj_calendar[adj_calendar['model_date'] <= date]['model_date'].iloc[-1]
-    previous_model_date = adj_calendar[adj_calendar['model_date'] <= date]['model_date'].iloc[-2]
-    previous_shortlist_res_path = fstrat_config.cc30_shortlist_res_path.format(previous_model_date)
-    assert os.path.exists(previous_shortlist_res_path), f"未找到{previous_shortlist_res_path}，请先缓存上一期结果"
-    previous_shortlist_res = pd.read_excel(previous_shortlist_res_path, index_col=0)[['product_id']].reset_index().rename(columns={'index': 'previous_index'})
-    # 获取基金池和当期模型打分并缓存
-    fund_universe = fstrat_getCC30EquityMFPool(current_model_date, include_pm_info=True)
-    fund_universe[['date', 'product_id', 'product_name', 'aum']].drop_duplicates().to_excel(fstrat_config.cc30_fund_universe_path.format(current_model_date), index=None)  # 基金池缓存时去重不带PM
-    product_score = fstrat_getCC30ProductScore(fund_universe['product_id'].unique().tolist(), current_model_date-datetime.timedelta(days=365), current_model_date, benchmark, rf)
-    product_score.to_excel(fstrat_config.cc30_fund_score_path.format(current_model_date), index=None)   # 缓存基金得分
-
+    # -------------------
+    # 生成最终名单
+    # -------------------
     # 多pm的产品会保留多行, 此处是为了引入pm信息
     product_score_with_info = pd.merge(fund_universe, product_score, on='product_id', how='left').sort_values('score', ascending=False)
     # 缓冲池中属于上一期模型结果的产品进行保留处理
@@ -140,28 +167,31 @@ def fstrat_getCC30ModelResult(
     product_score_with_info_exclude_retained = product_score_with_info_exclude_retained.groupby(['pm_name'], as_index=False).first().sort_values('score', ascending=False)
     # 对结果去重, 取前30名作为模型输出, 加入上一期结果的序号(如有，若为空则为新增产品)
     shortlist_res = pd.concat([retained_product_score_with_info, product_score_with_info_exclude_retained], axis=0)[['date', 'product_id', 'product_name', 'score']].drop_duplicates().iloc[:shortlist_num]
+
+    # -------------
+    # 加权方式
+    # -------------
     shortlist_res['weight'] = 1 / len(shortlist_res)  # 等权进行组合
+
+    # --------------
+    # 缓存最终名单
+    # --------------
     shortlist_res = pd.merge(shortlist_res, previous_shortlist_res[['product_id', 'previous_index']], on='product_id', how='left')  # 加入上一期名单序号
-    shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path.format(current_model_date))  # 缓存最终名单
+    shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path.format(date))  # 缓存最终名单
     return shortlist_res
 
-
-if __name__ == '__main__':
-    # 模型回溯区间
-    model_start_date = datetime.date(2014, 1, 1)
-    model_end_date = datetime.date(2025, 2, 28)
-    # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
-    adj_calendar = fstrat_getAdjustmentCalendar(freq='Q')
+# ----------------------------------
+# 回测模块 基于缓存结果回测策略收益序列
+# ----------------------------------
+def fstrat_getCC30ModelBackTestReturnSeries(
+    start_date,     # 起始日期
+    end_date,       # 截止日期
+    model_freq='Q'  # 模型频率
+):
+    trading_calendar = wind.wind_getSSECalendar()
+    adj_calendar = fstrat_getAdjustmentCalendar(freq=model_freq)
     adj_calendar['next_effective_date'] = adj_calendar['effective_date'].shift(-1)
-    model_init_date = adj_calendar[adj_calendar['model_date'] < model_start_date]['model_date'].iloc[-1]
-    pd.DataFrame(columns=['product_id']).to_excel(fstrat_config.cc30_shortlist_res_path.format(model_init_date))
-    adj_calendar = adj_calendar[(adj_calendar['model_date'] >= model_start_date) & (adj_calendar['model_date'] <= model_end_date)]
-
-    # run model
-    for model_date in adj_calendar['model_date'].to_list():
-        print(model_date)
-        single_period_shortlist_res = fstrat_getCC30ModelResult(model_date, benchmark='000906.SH', rf=0.03, shortlist_num=30, buffer_size=90)
-
+    adj_calendar = adj_calendar[(adj_calendar['model_date'] >= start_date) & (adj_calendar['model_date'] <= end_date)]
     # back-test model
     port_ret_series_list = []
     for index, row in adj_calendar.iterrows():
@@ -170,11 +200,42 @@ if __name__ == '__main__':
         single_period_shortlist_res['effective_date'] = row['effective_date']
         single_period_shortlist_res_pivot = pd.pivot_table(single_period_shortlist_res, values='weight', index='effective_date', columns='product_id')
         # 向前多取一些，保证取到上一交易日的净值
-        single_period_nav = wind.wind_getMFNav(row['effective_date'] - datetime.timedelta(days=14), row['next_effective_date'], product_id=single_period_shortlist_res['product_id'].to_list()).sort_values(['product_id', 'date'])
+        single_period_nav = wind.wind_getMFNav(row['effective_date'] - datetime.timedelta(days=14), min(end_date, row['next_effective_date'] - datetime.timedelta(days=1)),
+                                               product_id=single_period_shortlist_res['product_id'].to_list()).sort_values(['product_id', 'date'])
+        single_period_nav = single_period_nav[single_period_nav['date'].isin(trading_calendar['date'].to_list())]  # 过滤非交易日期的净值 通常为季度末
         single_period_nav['nav_adjusted'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.fillna(method='ffill'))
         single_period_nav['ret'] = single_period_nav.groupby(['product_id'])['nav_adjusted'].apply(lambda x: x.diff() / x.shift(1))
+        single_period_nav = single_period_nav[(single_period_nav['date'] >= row['effective_date']) & (single_period_nav['date'] < row['next_effective_date'])]  # 限制死区间
         single_period_ret_pivot = pd.pivot_table(single_period_nav, values='ret', index='date', columns='product_id')
         single_period_port_ret_series = bt.backtest_calPortfolioReturnSeries(single_period_ret_pivot, single_period_shortlist_res_pivot)
         port_ret_series_list.append(single_period_port_ret_series)
     port_ret_series = pd.concat(port_ret_series_list, axis=0)
     port_ret_series.to_frame().to_excel(f'./收益回测序列{port_ret_series.index.min()}_{port_ret_series.index.max()}.xlsx')
+
+
+if __name__ == '__main__':
+    # 模型回溯区间
+    model_start_date = datetime.date(2014, 1, 1)
+    model_end_date = datetime.date(2025, 2, 28)
+    model_freq = 'Q'  # 调仓频率 暂仅支持季度调仓Q
+    trading_calendar = wind.wind_getSSECalendar()  # 交易日历，用于回测时过滤非交易日净值数据
+    # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
+    adj_calendar = fstrat_getAdjustmentCalendar(freq=model_freq)
+    adj_calendar['next_effective_date'] = adj_calendar['effective_date'].shift(-1)
+    model_init_date = adj_calendar[adj_calendar['model_date'] < model_start_date]['model_date'].iloc[-1]
+    if not os.path.exists(fstrat_config.cc30_shortlist_res_path.format(model_init_date)):
+        pd.DataFrame(columns=['product_id']).to_excel(fstrat_config.cc30_shortlist_res_path.format(model_init_date))
+    adj_calendar = adj_calendar[(adj_calendar['model_date'] >= model_start_date) & (adj_calendar['model_date'] <= model_end_date)]
+
+    # # cal & cache factors
+    # for model_date in adj_calendar['model_date'].to_list():
+    #     print(model_date)
+    #     fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
+
+    # shortlist & cache final 30-products res from cached files
+    for model_date in adj_calendar['model_date'].to_list():
+        print(model_date)
+        fstrat_getCC30ModelFinalProductList(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=90)
+
+    # back-test model from cached files
+    fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date, model_freq=model_freq)
