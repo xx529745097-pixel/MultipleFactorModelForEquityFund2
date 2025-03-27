@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 def fstrat_getAdjustmentCalendar(
     freq='Q'     # 调仓频率
 ):
-    assert freq == 'Q', "暂仅支持季度调仓"
+    assert freq in ('Q', 'W'), "暂仅支持季频/周频调仓"
     adjustment_calendar = wind.wind_getSSECalendar().rename(columns={'date': 'model_date'})
     adjustment_calendar['effective_date'] = adjustment_calendar['model_date'].shift(-2)  # 模型日期为t日，调仓生效日期为t+2日
     if freq == 'Q':
@@ -31,10 +31,12 @@ def fstrat_getAdjustmentCalendar(
         adjustment_calendar['month'] = adjustment_calendar['model_date'].apply(lambda x: x.month)
         adjustment_calendar = adjustment_calendar[adjustment_calendar['month'].isin([1, 4, 7, 10])]  # 1, 4, 7, 10月末调仓
         adjustment_calendar = adjustment_calendar.groupby(['year', 'month']).last().sort_values('model_date').reset_index(drop=True)
+    elif freq == 'W':  # only Fridays
+        adjustment_calendar['weekday'] = adjustment_calendar['model_date'].apply(lambda x: x.weekday())
+        adjustment_calendar = adjustment_calendar[adjustment_calendar['weekday'] == 4]
     else:
         raise Exception(f'{freq}频率未定义')
-    return adjustment_calendar
-
+    return adjustment_calendar[['model_date', 'effective_date']]
 
 # --------------------------------------------
 # 筛选CC30公募基金池
