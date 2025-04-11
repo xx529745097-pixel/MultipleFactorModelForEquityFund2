@@ -48,17 +48,16 @@ def fstrat_getAdjustmentCalendar(
 # --------------------------------------------
 def fstrat_getCC30EquityMFPool(
     date,    # 考察日期
-    include_pm_info=False  # 是否包含PM信息，若包含则多PM产品会出现多行记录，默认为否
 ):
     mf_info = wind.wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)  # 获取历史初始基金，即AC份额仅考虑A份额
     # 筛选正在生效的sector type标签
     mf_info = mf_info[(mf_info['sector_start_date'] <= date) & ((mf_info['sector_end_date'] >= date) | mf_info['sector_end_date'].isna())]
     mf_info = mf_info[mf_info['type'].isin(['普通股票型基金', '偏股混合型基金', '灵活配置型基金'])]
     mf_info = mf_info[(mf_info['fund_open_type'] == '契约型开放式') & (mf_info['min_holding_month'].isna())]
-    mf_info = mf_info[~(mf_info['product_name'].str.contains('定开') | mf_info['product_name'].str.contains('持有'))]
+    mf_info = mf_info[~(mf_info['product_full_name'].str.contains('定开') | mf_info['product_full_name'].str.contains('持有') | mf_info['product_full_name'].str.contains('定期'))]
     # 筛选正在任职的PM，保留任职时间大于1Y
     mf_info = mf_info[(mf_info['pm_start_date'] <= date) & ((mf_info['pm_end_date'] >= date) | mf_info['pm_end_date'].isna())]
-    mf_info['pm_duration_days'] = (mf_info['pm_end_date'].fillna(date) - mf_info['pm_start_date']).apply(lambda x: x.days)
+    mf_info['pm_duration_days'] = (mf_info['pm_end_date'].apply(lambda x: min(date, x) if not pd.isna(x) else date) - mf_info['pm_start_date']).apply(lambda x: x.days)
     mf_info = mf_info[mf_info['pm_duration_days'] >= 365]
     # 基金最新规模大于2亿
     mf_latest_aum = wind.wind_getMFLatestAUM(date - datetime.timedelta(days=365), date)

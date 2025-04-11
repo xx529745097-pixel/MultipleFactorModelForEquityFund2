@@ -525,7 +525,7 @@ def anlsMF_getMFTop3Industry(
     return result_top3
 
 # ------------------------------------------------
-# 单只公募基金各报告期各行业比例
+# 公募基金各报告期各行业比例
 # ------------------------------------------------
 def anlsMF_getMFIndustryDistribution(
         start_date,                     # 起始日期，输入格式:datetime.date
@@ -541,23 +541,32 @@ def anlsMF_getMFIndustryDistribution(
     assert (type(start_date) == datetime.date), '日期输入格式需为datetime.date'
     assert (type(end_date) == datetime.date), '日期输入格式需为datetime.date'
     assert (type(product_id) == list), '基金代码输入格式需为list'
-    assert (len(product_id) == 1), '目前仅支持单只基金分析'
+    # assert (len(product_id) == 1), '目前仅支持单只基金分析'
     assert start_date <= end_date, '起始日需早于结束日'
     portfolio = anlsMF_getMFStockHoldings(product_id, freq, Top10, hidden_holdings)
     assert portfolio.empty == False, '成立时间不足'
 
     portfolio = portfolio.loc[(portfolio['date'] >= start_date) & (portfolio['date'] <= end_date)].reset_index(drop=True)
     # 行业填充
-    portfolio = _getIndustry(portfolio, company, level)
-    if IndustrytoStkValue:
-        result_industry = portfolio.groupby(['date', 'industry'])['stk_value_to_allstk'].agg(['sum', 'count']).reset_index()
+    portfolio = _getIndustry(portfolio, company, level, False)
+    if len(product_id) == 1:
+        if IndustrytoStkValue:
+            result_industry = portfolio.groupby(['date', 'industry'])['stk_value_to_allstk'].agg(['sum', 'count']).reset_index()
+        else:
+            result_industry = portfolio.groupby(['date', 'industry'])['stk_value_to_nav'].agg(['sum', 'count']).reset_index()
+        result_industry = result_industry.sort_values(by=['date','sum'], ascending=False).reset_index(drop=True)
+        result_industry_sum = pd.pivot_table(result_industry, columns='industry', index='date', values='sum', aggfunc='first')
+        result_industry_sum = result_industry_sum.append(pd.DataFrame(result_industry_sum.fillna(0).mean(), columns=['平均']).T)
     else:
-        result_industry = portfolio.groupby(['date', 'industry'])['stk_value_to_nav'].agg(['sum', 'count']).reset_index()
-    result_industry = result_industry.sort_values(by=['date','sum'], ascending=False).reset_index(drop=True)
-    result_industry_sum = pd.pivot_table(result_industry, columns='industry', index='date', values='sum', aggfunc='first')
-    result_industry_sum = result_industry_sum.append(pd.DataFrame(result_industry_sum.fillna(0).mean(), columns=['平均']).T)
-
+        if IndustrytoStkValue:
+            result_industry = portfolio.groupby(['product_id','date', 'industry'])['stk_value_to_allstk'].agg(['sum', 'count']).reset_index()
+        else:
+            result_industry = portfolio.groupby(['product_id','date', 'industry'])['stk_value_to_nav'].agg(['sum', 'count']).reset_index()
+        result_industry = result_industry.sort_values(by=['product_id','date','sum'], ascending=False).reset_index(drop=True)
+        result_industry_sum = pd.pivot_table(result_industry, columns='industry', index=['date','product_id'], values='sum', aggfunc='first').fillna(0).reset_index()
+        result_industry_sum = result_industry_sum.append(pd.DataFrame(result_industry_sum.fillna(0).mean(), columns=['平均']).T)
     return result_industry_sum
+
 
 # ------------------------------------------------
 # 单只公募基金各报告期各行业的股票个数

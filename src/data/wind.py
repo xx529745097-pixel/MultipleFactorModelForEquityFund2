@@ -360,7 +360,7 @@ def wind_getHistoricalProductList(
     if exclude_new_product == True:
         assert as_of_date is not None, '参数exclude_new_product为True需要参数as_of_date不为None'
     dbconn = wind_connectWindDB()
-    sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name," \
+    sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_FULLNAME as product_full_name, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name," \
        " a.F_INFO_SETUPDATE as product_start_date,a.F_INFO_MATURITYDATE as product_end_date, a.F_INFO_TYPE as fund_open_type, d.F_MINM_HOLDING_PRD as min_holding_month, " \
        " b.F_INFO_MANAGER_GENDER as pm_gender, b.F_INFO_FUNDMANAGER_ID as pm_id, b.F_INFO_FUNDMANAGER as pm_name," \
        " b.F_INFO_MANAGER_STARTDATE as pm_start_date,b.F_INFO_MANAGER_LEAVEDATE as pm_end_date, " \
@@ -1214,6 +1214,8 @@ def wind_getMFStats(
     fcode_array = [fcode[i:i+500] for i in range(0, len(fcode), 500)]
     all_stats_array = []
     for i in range(len(fcode_array)):
+        if len(fcode_array[i]) == 1:  # list长度为1时候无法使用tuple
+            fcode_array[i] = ('\'' + fcode_array[i][0] + '\'')
         thisStats = pd.read_sql_query(stats_sql.format(stats_str, enddate.strftime('%Y%m%d'), startdate.strftime('%Y%m%d'), fcode_array[i]),
                                       dbconn)
         all_stats_array.append(thisStats)
