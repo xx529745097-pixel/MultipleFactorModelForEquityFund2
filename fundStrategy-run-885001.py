@@ -49,6 +49,7 @@ def fstrat_getAdjustmentCalendar(
 # --------------------------------------------
 def fstrat_getCC30EquityMFPool(
     date,    # 考察日期
+    company_name = False  #是否保留公司名
 ):
     mf_info = wind.wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)  # 获取历史初始基金，即AC份额仅考虑A份额
     # 筛选正在生效的sector type标签
@@ -76,7 +77,10 @@ def fstrat_getCC30EquityMFPool(
     # 加入日期
     mf_info['date'] = date
     # 加入pm信息，不对产品去重
-    fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
+    if company_name:
+        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name', 'company_short_name']].sort_values('product_id')
+    else:
+        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
 
 # -----------------------------------------
@@ -100,7 +104,17 @@ def fstrat_getCC30ProductScore(
     # assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
     anls_start_date = date - datetime.timedelta(days=365)
     # 获取基金池和当期模型打分并缓存
-    fund_universe = fstrat_getCC30EquityMFPool(date)
+    fund_universe = fstrat_getCC30EquityMFPool(date,company_name=True)
+    # 剔除掉不在备选库的基金公司的产品
+    fundCompanyPool = pd.read_excel(fstrat_config.cc30_run_path+"基金公司库.xlsx")
+    fundCompanyPool = fundCompanyPool[fundCompanyPool['所属库'] == '基金公司备选库']
+    fundCompanyPool2 = fundCompanyPool['基金公司简称'].to_list()
+    # sql_1 = "select COMP_NAME, COMP_SNAME as company " \
+    #         "from CFundIntroduction "
+    # dbconn = wind.wind_connectWindDB()
+    # fundcompanylist = pd.read_sql_query(sql_1, dbconn)
+    fund_universe = fund_universe[fund_universe['company_short_name'].isin(fundCompanyPool2)]
+
     # 缓存基金池 数据带PM不去重
     fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
     # 因子计算
@@ -323,7 +337,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     original_deviation=10,               # 原始偏离度限制
     temp_ind_deviation=0.01,  # 临时调仓偏离度限制
     temp_deviation=0.1,                 # 临时调仓偏离度限制
-    index = '000906.SH',                # 观测指数
+    index = '885001.WI',                # 观测指数
     index_delay = 0,                    # 指数公布延迟，股票指数为0，基金指数为1，延迟1天
     stock_barra=0,  # 股票barra偏离
     index_barra=0,   # 基准barra偏离
@@ -704,7 +718,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
     )
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
-
+    # 输出因子打分结果
+    product_score_with_info.to_excel(fstrat_config.cc30_run_path+"基金打分结果_{}.xlsx".format(date))
 
     # 优化组合
     optimized_results = optimize_portfolio(
