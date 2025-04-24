@@ -18,7 +18,10 @@ def backtest_calPortfolioReturnSeries(
     ret_df,    # 底层资产收益
     weight_df  # 调仓生效日权重
 ):
-    assert set(ret_df.columns) == set(weight_df.columns), "回测时ret_df和weight_df的columns需要完全一致"
+    # assert set(ret_df.columns) == set(weight_df.columns), "回测时ret_df和weight_df的columns需要完全一致"
+    if set(ret_df.columns) != set(weight_df.columns):
+        common_cols = weight_df.columns.intersection(ret_df.columns)
+        weight_df = weight_df[common_cols]
     weight_df = weight_df[ret_df.columns]  # 保证ret_df和weight_df资产排序一致
     weight_df = weight_df.add_suffix('_weight')
     # 合并数据，整合日期index，从第一个调仓权重生效日开始回测

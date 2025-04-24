@@ -326,7 +326,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     index = '000906.SH',                # 观测指数
     index_delay = 0,                    # 指数公布延迟，股票指数为0，基金指数为1，延迟1天
     stock_barra=0,  # 股票barra偏离
-    index_barra=0   # 基准barra偏离
+    index_barra=0,   # 基准barra偏离
+    equal_weight = True  #每期是否等权
 ):
     # ---------------------------------
     # 使用全维度收紧的优化算法
@@ -355,8 +356,23 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         # 定义问题
         prob = pulp.LpProblem("Portfolio_Optimization", pulp.LpMaximize)
 
-        # 定义二进制变量 z_i
-        z = [pulp.LpVariable(f"z_{i}", cat='Binary') for i in range(n_funds)]
+        if equal_weight:
+            # 定义二进制变量 z_i
+            z = [pulp.LpVariable(f"z_{i}", cat='Binary') for i in range(n_funds)]
+        else:
+            z = [pulp.LpVariable(f"z_{i}", lowBound=0, upBound=0.05*30) for i in range(n_funds)]
+            ## 限制权重在0.005以上的基金数量正好为30
+            # 定义辅助二进制变量b_i
+            b = [pulp.LpVariable(f"b_{i}", cat='Binary') for i in range(n_funds)]
+            # 建立权重与二进制的逻辑关系
+            M = 10000  # 足够大的常数（取权重上限值）
+            for i in range(n_funds):
+                # 当w_i >0.005时必须b_i=1
+                prob += z[i] <= 0.005*30 + M * b[i]
+                # 当w_i >=0.005时必须b_i=1（放大判断阈值避免浮点误差）
+                prob += z[i] >= 0.005*30 * b[i] - 1e-8
+            # 限制符合条件的基金数量
+            prob += pulp.lpSum(b) == 30
 
         # 目标函数：最大化因子得分
         c = df_crossSection['score'].values
@@ -488,13 +504,22 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # -------------------
     # 模型策略部分 因子权重
     # -------------------
-    # JW30
-    product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
-     + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
-    # # CC30
-    # product_score['score'] = 0.2*product_score['jensen_beta'] + 0.4*product_score['sharpe'] + 0.1*product_score['TM_gamma'] + 0.1*product_score['TM_alpha'] + 0.2*product_score['stability']
-    product_score.sort_values('score', ascending=False, inplace=True)
+    # # # 原版JW30
+    # product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
+    #  + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
+    ## 新JW30——885001
+    # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+    #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+    #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
+    #                               'delta_survey_6m'] + product_score['employee_holding_ratio']
+    #                           + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
 
+    ##  新JW30——000906：
+    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+                              + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
+                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
+                              + (1 - product_score['tracking_error_000906']) + (1 - product_score['vol_nl'])) / 9
     # -------------------
     # 生成最终名单
     # -------------------
@@ -719,6 +744,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
                 temp_deviation
             )
             optimized_weights = optimized_results[0]
+            optimized_weights = np.where(optimized_weights < 0.005-1e-8, 0, optimized_weights)  # 剔除小于0.5%的仓位
+            optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
             product_score_with_info['weight'] = optimized_weights
 
             # 提取行业偏离和市值偏离
@@ -890,6 +917,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     )
 
     optimized_weights = optimized_results[0]
+    optimized_weights = np.where(optimized_weights<0.005-1e-8, 0, optimized_weights) # 剔除小于0.5%的仓位
+    optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
     product_score_with_info['weight'] = optimized_weights
 
     # 提取行业偏离和市值偏离
@@ -913,6 +942,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format(date))
     shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format("上一期持仓"))
     return shortlist_res
+
 
 #############################################################################################
 #以上为xjw改动部分
@@ -1010,9 +1040,9 @@ def fstrat_getCC30ModelBackTestReturnSeries(
 if __name__ == '__main__':
     # 模型回溯区间
     model_start_date = datetime.date(2014, 1, 28)
-    # model_start_date = datetime.date(2015,7,31)
+    # model_start_date = datetime.date(2024,7,31)
     model_end_date = datetime.date(2025, 2, 28)
-    model_freq = 'W'  # 调仓频率 暂仅支持Q\W
+    model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
     if model_freq == 'Q':  # 调仓频率
         trading_calendar = wind.wind_getSSECalendar()  # 交易日历，用于回测时过滤非交易日净值数据
         # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
@@ -1055,10 +1085,12 @@ if __name__ == '__main__':
 
     for model_date in adj_calendar['model_date'].to_list():
         print(model_date)
-        fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=0.03,
-                                                                 original_ind_deviation=10, original_deviation=10, temp_ind_deviation=0.01,temp_deviation=0.1, index='885001.WI', index_delay=1,
-                                                                 stock_barra=stock_barra, index_barra=index_barra )
-
+        # fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=10,
+        #                                                          original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=0.01,temp_deviation=0.3, index='000906.SH', index_delay=0,
+        #                                                          stock_barra=stock_barra, index_barra=index_barra )
+        fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='000906.SH', index_delay=0,
+                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
     # model_start_date = datetime.date(2022,10,31)
 
     # back-test model from cached files

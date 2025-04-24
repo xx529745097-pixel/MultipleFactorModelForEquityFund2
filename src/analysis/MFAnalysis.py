@@ -1172,6 +1172,38 @@ def anlsMF_fundClassification(
     fundDf.to_excel('{0}/行业分类.xlsx'.format(path))
     return fundDf
 
+# -------------------------------------------
+# 公募基金波动率指标
+# -------------------------------------------
+def anlsMF_getMFVolatilityIndicator(
+    product_ids,        # 产品ID
+    start_date,         # datetime.date, 考察起始日期
+    end_date,           # datetime.date, 考察截止日期
+    freq='D',           # 收益序列频率，仅支持D和W
+    vol_type='std',     # 波动率类型，支持std普通标准差和nl非线性波动率
+    benchmark=None      # 超额基准，默认为None计算原始收益的波动率因子
+):
+    assert isinstance(start_date, datetime.date), ""
+    assert freq in ('D', 'W'), "仅支持日频'D'或周频'W'"
+    assert vol_type in ('std', 'nl'), "波动率类型仅支持'std'和'nl'"
+    product_ret = wind_getMFStats(product_ids, start_date-relativedelta(weeks=4), end_date, ['f_avgreturn_day'])
+    # convert to weekly freq if required
+    product_ret = fof_calendar.calender_convertDailyReturnToWeekly(product_ret, date_column_name='date', return_column_name='f_avgreturn_day', id_column_name='product_id') if freq == 'W' else product_ret
+    product_ret = product_ret[(product_ret['date'] >= start_date) & (product_ret['date'] <= end_date)]
+    benchmark_ret = wind.wind_getIndexReturn(benchmark, start_date, end_date, freq) if benchmark else None
+    # vol_std因子，收益率标准差  col name: vol_std
+    vol_indicator = product_ret.set_index('date').groupby('product_id', as_index=False).agg(vol_std=('f_avgreturn_day', lambda x: cal.basicCal_calPerformanceStats(x.dropna(),
+            freq, benchmark_ret_series=benchmark_ret, stats=['annualized_volatility'])['annualized_volatility']))
+    # vol_nl因子，非线性波动率，log(1 + 100*vol)^3对log(1 + 100*vol)线性回归的残差项
+    if vol_type == 'nl':  # col name: vol_nl
+        log_vol_x = vol_indicator['vol_std'].apply(lambda x: np.log(1 + 100*x)).to_numpy().reshape(-1, 1)
+        cubic_log_vol_y = vol_indicator['vol_std'].apply(lambda x: (np.log(1 + 100*x))**3).to_numpy().reshape(-1, )
+        vol_nl_model = LinearRegression().fit(log_vol_x, cubic_log_vol_y)
+        # 计算预测值和残差
+        cubic_log_vol_y_pred = vol_nl_model.predict(log_vol_x)
+        vol_indicator['vol_nl'] = (cubic_log_vol_y - cubic_log_vol_y_pred)
+    return vol_indicator
+
 # ------------------------------------------------
 # 计算基金的jensen，选股能力(alpha)，选时能力(gamma)，Sharpe
 # jensen-alpha = (ri-rf) - beta_i(rm-rf)
@@ -1186,6 +1218,8 @@ def anlsMF_SelectedRatingIndicator(
         rf = 0.03                                       # risk-free rate (annual)
 ):
     retDf = wind_getMFStats(product_ids, startdate-relativedelta(weeks=4), enddate, ['f_avgreturn_day'])
+    wind_calendar = wind.wind_getSSECalendar()
+    retDf = retDf[retDf['date'].isin(wind_calendar['date'].to_list())].fillna(0)  # 仅保留交易日，缺失值填充为0
     if freq == 'W':  # convert to weekly freq
         retDf = fof_calendar.calender_convertDailyReturnToWeekly(retDf, date_column_name='date', return_column_name='f_avgreturn_day', id_column_name='product_id')
     retDf = pd.pivot_table(retDf, values='f_avgreturn_day', index='date', columns='product_id').loc[startdate:enddate]
@@ -1201,7 +1235,14 @@ def anlsMF_SelectedRatingIndicator(
     employee_holding_ratio_data = wind_getMFLatestHoldingStructure(enddate)
     employee_holding_ratio = pd.DataFrame(product_ids, columns=['product_id'])
     employee_holding_ratio = pd.merge(employee_holding_ratio, employee_holding_ratio_data[['product_id', 'employee_holding_ratio']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
-    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen_beta', 'jensen_alpha', 'TM_gamma', 'sharpe', 'mdd', 'size', 'delta_survey_6m', 'employee_holding_ratio'])
+    # 相对885001跟踪误差(超额波动率因子)
+    tracking_error_885001 = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='std', benchmark='885001.WI')
+    # 相对000906跟踪误差(超额波动率因子)
+    tracking_error_000906 = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='std', benchmark='000906.SH')
+    # 收益非线性波动率，log(1 + 100*vol)^3对log(1 + 100*vol)线性回归的残差项
+    vol_nl = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='nl', benchmark=None)
+    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen_beta', 'jensen_alpha', 'TM_gamma', 'sharpe', 'mdd', 'size', 'delta_survey_6m',
+                                                                   'employee_holding_ratio', 'tracking_error_885001', 'tracking_error_000906', 'vol_nl'])
     for product in product_ids:
         jensen_alpha, jensen_beta = basicCal_jensen(retDf[product], idxret, freq, rf)  # CAPM Model
         indicator_result.loc['jensen_beta', product] = jensen_beta
@@ -1214,10 +1255,14 @@ def anlsMF_SelectedRatingIndicator(
         indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
         indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]
         indicator_result.loc['employee_holding_ratio', product] = employee_holding_ratio[employee_holding_ratio['product_id'] == product]['employee_holding_ratio'].iloc[0]
+        indicator_result.loc['tracking_error_885001', product] = tracking_error_885001[tracking_error_885001['product_id'] == product]['vol_std'].iloc[0]
+        indicator_result.loc['tracking_error_000906', product] = tracking_error_000906[tracking_error_000906['product_id'] == product]['vol_std'].iloc[0]
+        indicator_result.loc['vol_nl', product] = vol_nl[vol_nl['product_id'] == product]['vol_nl'].iloc[0]
     indicator_result = indicator_result.T.reset_index()
     indicator_result = indicator_result.rename({'index': 'product_id'}, axis=1)
     indicator_result.rename(columns={'index': 'factor'}, inplace=True)
     return indicator_result
+
 
 # ------------------------------------------------
 # 计算基金的稳定度。数值越大，稳定性越好。
