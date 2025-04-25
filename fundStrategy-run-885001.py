@@ -49,7 +49,7 @@ def fstrat_getAdjustmentCalendar(
 # --------------------------------------------
 def fstrat_getCC30EquityMFPool(
     date,    # 考察日期
-    company_name = False  #是否保留公司名
+    company_id = False  #是否保留公司id
 ):
     mf_info = wind.wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)  # 获取历史初始基金，即AC份额仅考虑A份额
     # 筛选正在生效的sector type标签
@@ -77,8 +77,8 @@ def fstrat_getCC30EquityMFPool(
     # 加入日期
     mf_info['date'] = date
     # 加入pm信息，不对产品去重
-    if company_name:
-        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name', 'company_short_name']].sort_values('product_id')
+    if company_id:
+        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name', 'company_id']].sort_values('product_id')
     else:
         fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
@@ -104,16 +104,16 @@ def fstrat_getCC30ProductScore(
     # assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
     anls_start_date = date - datetime.timedelta(days=365)
     # 获取基金池和当期模型打分并缓存
-    fund_universe = fstrat_getCC30EquityMFPool(date,company_name=True)
+    fund_universe = fstrat_getCC30EquityMFPool(date,company_id=True)
     # 剔除掉不在备选库的基金公司的产品
     fundCompanyPool = pd.read_excel(fstrat_config.cc30_run_path+"基金公司库.xlsx")
     fundCompanyPool = fundCompanyPool[fundCompanyPool['所属库'] == '基金公司备选库']
-    fundCompanyPool2 = fundCompanyPool['基金公司简称'].to_list()
-    # sql_1 = "select COMP_NAME, COMP_SNAME as company " \
+    fundCompanyPool2 = fundCompanyPool['基金公司代码'].to_list()
+    # sql_1 = "select COMP_NAME, COMP_SNAME, COMP_ID " \
     #         "from CFundIntroduction "
     # dbconn = wind.wind_connectWindDB()
     # fundcompanylist = pd.read_sql_query(sql_1, dbconn)
-    fund_universe = fund_universe[fund_universe['company_short_name'].isin(fundCompanyPool2)]
+    fund_universe = fund_universe[fund_universe['company_id'].isin(fundCompanyPool2)]
 
     # 缓存基金池 数据带PM不去重
     fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
@@ -329,6 +329,7 @@ def getBackTestDates(startdate, enddate):
 # -----------------------------------------
 def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     date,              # 考察日期 需为模型运行日期
+    ann_date_temp,     #最近一期年报
     model_freq='Q',    # 模型调仓频率 决定了模型的运行日期
     shortlist_num=30,  # 模型最终输出的产品个数
     buffer_size=90,    # 缓冲池大小
@@ -576,15 +577,15 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     quarter_to_backtest['ann_date'] = 0
     quarter_to_backtest['ann_date'] = quarter_to_backtest['quarter_date'].apply(quarter_to_annual)
 
-    # 计算date的前一年报日
-    temp_df = quarter_to_backtest.copy()
-    temp_df["backtest_date"] = pd.to_datetime(temp_df["backtest_date"], errors="coerce")
-    target_date = pd.to_datetime(date)
-    filtered = temp_df[temp_df["backtest_date"] <= target_date]
-    if not pd.api.types.is_datetime64_any_dtype(filtered["backtest_date"]):
-        raise TypeError("backtest_date column is not datetime type after filtering")
-    closest_row = filtered.loc[filtered["backtest_date"].idxmax()]
-    ann_date_temp = closest_row['ann_date']
+    # # 计算date的前一年报日
+    # temp_df = quarter_to_backtest.copy()
+    # temp_df["backtest_date"] = pd.to_datetime(temp_df["backtest_date"], errors="coerce")
+    # target_date = pd.to_datetime(date)
+    # filtered = temp_df[temp_df["backtest_date"] <= target_date]
+    # if not pd.api.types.is_datetime64_any_dtype(filtered["backtest_date"]):
+    #     raise TypeError("backtest_date column is not datetime type after filtering")
+    # closest_row = filtered.loc[filtered["backtest_date"].idxmax()]
+    # ann_date_temp = closest_row['ann_date']
 
     ### 季度调仓
     # PM去重与权重分配
@@ -862,6 +863,7 @@ if __name__ == '__main__':
 
     ### 如果希望在指定日期运算，请运行以下代码
     model_date = datetime.date(2025,4,23)
+    ann_date = datetime.date(2024,12,31)
     ###
 
     # # cal & cache factors
@@ -884,7 +886,7 @@ if __name__ == '__main__':
 
     # 基金选择
     print(model_date)
-    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
                                                                  original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
     # model_start_date = datetime.date(2022,10,31)
