@@ -720,7 +720,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     )
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
     # 输出因子打分结果
-    product_score_with_info.to_excel(fstrat_config.cc30_run_path+"基金打分结果_{}.xlsx".format(date))
+    product_score_with_info_output = pd.merge(product_score_with_info, product_score, on = 'product_id', how = 'left')
+    product_score_with_info_output.to_excel(fstrat_config.cc30_run_path+"基金打分结果_{}.xlsx".format(date))
 
     # 优化组合
     optimized_results = optimize_portfolio(
@@ -755,8 +756,12 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     fund_result = product_score_with_info.nlargest(30, 'weight')
 
     # 更新缓存
-    shortlist_res = pd.merge(fund_result, previous_shortlist_res[['product_id', 'previous_index']],
+    product_score = product_score.sort_values('score', ascending= False).reset_index(drop = True).reset_index().rename(columns = {'index':'rank'})
+    product_score = product_score.drop(columns = 'score')
+    shortlist_res = pd.merge(fund_result, product_score,
                              on='product_id', how='left')
+    shortlist_res.rename(columns = {'mdd':'mdd_反向', 'size':'size_反向', 'tracking_error_885001':'tracking_error_885001_反向',
+                                    'tracking_error_000906':'tracking_error_000906_反向', 'vol_nl':'vol_nl_反向'})
     shortlist_res.to_excel(fstrat_config.cc30_run_path+"基金选择_{}.xlsx".format(date))
     return shortlist_res
 
@@ -867,8 +872,8 @@ if __name__ == '__main__':
     ###
 
     # # cal & cache factors
-    print(model_date)
-    fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
+    # print(model_date)
+    # fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 

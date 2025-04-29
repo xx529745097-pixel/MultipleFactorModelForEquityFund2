@@ -1203,7 +1203,6 @@ def anlsMF_getMFVolatilityIndicator(
         cubic_log_vol_y_pred = vol_nl_model.predict(log_vol_x)
         vol_indicator['vol_nl'] = (cubic_log_vol_y - cubic_log_vol_y_pred)
     return vol_indicator
-
 # ------------------------------------------------
 # 计算基金的jensen，选股能力(alpha)，选时能力(gamma)，Sharpe
 # jensen-alpha = (ri-rf) - beta_i(rm-rf)
