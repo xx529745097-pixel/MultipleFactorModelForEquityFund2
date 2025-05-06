@@ -863,17 +863,17 @@ if __name__ == '__main__':
     # 模型回溯区间
     model_start_date = datetime.date(2024, 12, 31)
     # model_start_date = datetime.date(2024,7,31)
-    model_end_date = datetime.date(2025, 4, 22)
+    model_end_date = datetime.date(2025, 4, 30)
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,4,23)
+    model_date = datetime.date(2025,4,30)
     ann_date = datetime.date(2024,12,31)
     ###
 
     # # cal & cache factors
-    # print(model_date)
-    # fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
+    print(model_date)
+    fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 
