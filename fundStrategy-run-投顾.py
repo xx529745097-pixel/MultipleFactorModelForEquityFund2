@@ -17,6 +17,32 @@ import warnings
 warnings.filterwarnings('ignore')
 import pulp
 
+
+def towindcode(x):
+    if x[0] == '1':
+        x = x[:-2] + 'SZ'
+    if x[0] == '5':
+        x = x[:-2] + 'SH'
+    return x
+
+def otc_to_inside(list1):
+    import sqlalchemy
+    import os
+
+    os.environ['NLS_LANG'] = 'SIMPLIFIED CHINESE_CHINA.UTF8'
+    ora_connect_str  = 'oracle://xujunwei:40!VEz6QX@10.23.153.15:21010/wind'
+    dbengine = sqlalchemy.create_engine(ora_connect_str, poolclass=sqlalchemy.pool.NullPool)
+    dbconn = dbengine.connect()
+    sql = "select F_INFO_WINDCODE " \
+          "from ChinaMutualFundDescription "
+    df = pd.read_sql_query(sql, dbconn)
+    list2 = df['f_info_windcode'].tolist()
+    for i in range(len(list1)):
+        if list1[i] not in list2:
+            list1[i] = towindcode(list1[i])
+    return list1
+
+
 # -----------------------------------------------
 # 获取模型运行日期t和调仓日期t+2交易日
 # 符合公募场外申购赎回规则：t日收盘后模型给出结果，t+1日完成申赎，t+2日确认份额开始计算收益
@@ -49,6 +75,7 @@ def fstrat_getAdjustmentCalendar(
 # --------------------------------------------
 def fstrat_getCC30EquityMFPool(
     date,    # 考察日期
+    company_id = False  #是否保留公司id
 ):
     mf_info = wind.wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)  # 获取历史初始基金，即AC份额仅考虑A份额
     # 筛选正在生效的sector type标签
@@ -76,7 +103,10 @@ def fstrat_getCC30EquityMFPool(
     # 加入日期
     mf_info['date'] = date
     # 加入pm信息，不对产品去重
-    fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
+    if company_id:
+        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name', 'company_id']].sort_values('product_id')
+    else:
+        fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
 
 # -----------------------------------------
@@ -84,9 +114,10 @@ def fstrat_getCC30EquityMFPool(
 # -----------------------------------------
 def fstrat_getCC30ProductScore(
     date,                   # 考察日期
+    path,
     model_freq='Q',             # 模型调仓频率 决定了模型的运行日期
     benchmark='000906.SH',  # 指标计算基准
-    rf=0.03,                # 无风险利率
+    rf=0.03                # 无风险利率
 ):
     # 计算最近两次模型运行日期
     if model_freq == 'Q':
@@ -97,12 +128,23 @@ def fstrat_getCC30ProductScore(
         adj_calendar = pd.concat([adj_calendar1, adj_calendar2], axis=0).drop_duplicates(subset=["model_date"])
         adj_calendar.dropna(inplace=True)
         adj_calendar.sort_values(by='model_date', inplace=True)
-    assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
+    # assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
     anls_start_date = date - datetime.timedelta(days=365)
     # 获取基金池和当期模型打分并缓存
-    fund_universe = fstrat_getCC30EquityMFPool(date)
+    fund_universe = pd.read_excel(path)
+    fund_universe['product_id'] = otc_to_inside(fund_universe['product_id'])
+    # # 剔除掉不在备选库的基金公司的产品
+    # fundCompanyPool = pd.read_excel(fstrat_config.cc30_run_path+"基金公司库.xlsx")
+    # fundCompanyPool = fundCompanyPool[fundCompanyPool['所属库'] == '基金公司备选库']
+    # fundCompanyPool2 = fundCompanyPool['基金公司代码'].to_list()
+    # sql_1 = "select COMP_NAME, COMP_SNAME, COMP_ID " \
+    #         "from CFundIntroduction "
+    # dbconn = wind.wind_connectWindDB()
+    # fundcompanylist = pd.read_sql_query(sql_1, dbconn)
+    # fund_universe = fund_universe[fund_universe['company_id'].isin(fundCompanyPool2)]
+
     # 缓存基金池 数据带PM不去重
-    fund_universe.to_excel(fstrat_config.cc30_fund_universe_path.format(date), index=None)
+    # fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
     # 因子计算
     product_ids = fund_universe['product_id'].unique().tolist()
     product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
@@ -110,7 +152,7 @@ def fstrat_getCC30ProductScore(
     weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, date)   # 周度收益率的排名稳定性
     product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
     # 缓存因子打分
-    product_score.to_excel(fstrat_config.cc30_fund_score_path.format(date), index=None)
+    product_score.to_excel("投顾-输出结果/因子打分_{}.xlsx".format(date), index=None)
     return product_score
 
 # -----------------------------------------
@@ -315,6 +357,8 @@ def getBackTestDates(startdate, enddate):
 # -----------------------------------------
 def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     date,              # 考察日期 需为模型运行日期
+    ann_date_temp,     #最近一期年报
+    fund_universe_path,
     model_freq='Q',    # 模型调仓频率 决定了模型的运行日期
     shortlist_num=30,  # 模型最终输出的产品个数
     buffer_size=90,    # 缓冲池大小
@@ -323,7 +367,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     original_deviation=10,               # 原始偏离度限制
     temp_ind_deviation=0.01,  # 临时调仓偏离度限制
     temp_deviation=0.1,                 # 临时调仓偏离度限制
-    index = '000906.SH',                # 观测指数
+    index = '885001.WI',                # 观测指数
     index_delay = 0,                    # 指数公布延迟，股票指数为0，基金指数为1，延迟1天
     stock_barra=0,  # 股票barra偏离
     index_barra=0,   # 基准barra偏离
@@ -360,7 +404,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
             # 定义二进制变量 z_i
             z = [pulp.LpVariable(f"z_{i}", cat='Binary') for i in range(n_funds)]
         else:
-            z = [pulp.LpVariable(f"z_{i}", lowBound=0, upBound=0.05*shortlist_num) for i in range(n_funds)]
+            z = [pulp.LpVariable(f"z_{i}", lowBound=0, upBound=0.05*30) for i in range(n_funds)]
             ## 限制权重在0.005以上的基金数量正好为30
             # 定义辅助二进制变量b_i
             b = [pulp.LpVariable(f"b_{i}", cat='Binary') for i in range(n_funds)]
@@ -368,18 +412,18 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
             M = 10000  # 足够大的常数（取权重上限值）
             for i in range(n_funds):
                 # 当w_i >0.005时必须b_i=1
-                prob += z[i] <= 0.005*shortlist_num + M * b[i]
+                prob += z[i] <= 0.005*30 + M * b[i]
                 # 当w_i >=0.005时必须b_i=1（放大判断阈值避免浮点误差）
-                prob += z[i] >= 0.005*shortlist_num * b[i] - 1e-8
+                prob += z[i] >= 0.005*30 * b[i] - 1e-8
             # 限制符合条件的基金数量
-            prob += pulp.lpSum(b) == shortlist_num
+            prob += pulp.lpSum(b) == 30
 
         # 目标函数：最大化因子得分
         c = df_crossSection['score'].values
-        prob += pulp.lpSum([(c[i] / shortlist_num) * z[i] for i in range(n_funds)])
+        prob += pulp.lpSum([(c[i] / 30) * z[i] for i in range(n_funds)])
 
         # 约束条件：权重之和为 1
-        prob += pulp.lpSum([z[i] for i in range(n_funds)]) == shortlist_num
+        prob += pulp.lpSum([z[i] for i in range(n_funds)]) == 30
 
         # 约束条件：行业偏离不超过 deviation_limit
         for industry in industries:
@@ -389,11 +433,11 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
 
             # 上限约束
             prob += pulp.lpSum(
-                [(industry_weights[i] / shortlist_num) * z[i] for i in range(n_funds)]) <= benchmark_weight + deviation_limit
+                [(industry_weights[i] / 30) * z[i] for i in range(n_funds)]) <= benchmark_weight + deviation_limit
 
             # 下限约束
             prob += pulp.lpSum(
-                [(industry_weights[i] / shortlist_num) * z[i] for i in range(n_funds)]) >= benchmark_weight - deviation_limit
+                [(industry_weights[i] / 30) * z[i] for i in range(n_funds)]) >= benchmark_weight - deviation_limit
 
         # 添加市值偏离约束
         if size_deviation_limit is not None:
@@ -410,9 +454,9 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
             benchmark_size_exposure = zz800_barra_temp['size'].sum()
 
             # 市值偏离约束
-            prob += pulp.lpSum([(fund_size_exposures[i] / shortlist_num) * z[i] for i in
+            prob += pulp.lpSum([(fund_size_exposures[i] / 30) * z[i] for i in
                                 range(n_funds)]) <= benchmark_size_exposure + size_deviation_limit
-            prob += pulp.lpSum([(fund_size_exposures[i] / shortlist_num) * z[i] for i in
+            prob += pulp.lpSum([(fund_size_exposures[i] / 30) * z[i] for i in
                                 range(n_funds)]) >= benchmark_size_exposure - size_deviation_limit
 
         # 添加 sizenl 偏离约束
@@ -430,9 +474,9 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
             benchmark_sizenl_exposure = zz800_barra_temp['sizenl'].sum()
 
             # sizenl 偏离约束
-            prob += pulp.lpSum([(fund_sizenl_exposures[i] / shortlist_num) * z[i] for i in
+            prob += pulp.lpSum([(fund_sizenl_exposures[i] / 30) * z[i] for i in
                                 range(n_funds)]) <= benchmark_sizenl_exposure + sizenl_deviation_limit
-            prob += pulp.lpSum([(fund_sizenl_exposures[i] / shortlist_num) * z[i] for i in
+            prob += pulp.lpSum([(fund_sizenl_exposures[i] / 30) * z[i] for i in
                                 range(n_funds)]) >= benchmark_sizenl_exposure - sizenl_deviation_limit
 
         # 求解问题
@@ -442,7 +486,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
 
         # 提取结果
         solution = np.array([z[i].varValue for i in range(n_funds)])
-        weights = solution / shortlist_num  # 转换为权重
+        weights = solution / 30  # 转换为权重
 
         # 计算行业权重偏离值
         industry_deviations = {}
@@ -476,52 +520,48 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         adj_calendar = pd.concat([adj_calendar1, adj_calendar2], axis=0).drop_duplicates(subset=["model_date"])
         adj_calendar.dropna(inplace = True)
         adj_calendar.sort_values(by = 'model_date', inplace = True)
-    assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
+    # assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
     previous_model_date = adj_calendar[adj_calendar['model_date'] < date]['model_date'].iloc[-1]
 
     # -------------------
     # 读取上一期最终名单
     # -------------------
-    previous_shortlist_res_path = fstrat_config.cc30_shortlist_res_path_backtest1.format("上一期持仓")
+    previous_shortlist_res_path = fstrat_config.cc30_run_path+"上一期持仓.xlsx"
     assert os.path.exists(previous_shortlist_res_path), f"未找到{previous_shortlist_res_path}，请先缓存上一期最终名单"  # 需要取到上一期结果得到缓冲池产品
     previous_shortlist_res = pd.read_excel(previous_shortlist_res_path, index_col=0)[['product_id']].reset_index().rename(columns={'index': 'previous_index'})
 
     # -------------------------
     # 读取当期基金池 包含多行pm信息
     # -------------------------
-    fund_universe_path = fstrat_config.cc30_fund_universe_path.format(date)
-    assert os.path.exists(fund_universe_path), f"未找到{fund_universe_path}，请先缓存当期基金池结果"  # 需要取到当期的打分结果
     fund_universe = pd.read_excel(fund_universe_path)
     fund_universe['date'] = pd.to_datetime(fund_universe['date']).dt.date
 
     # -------------------
     # 读取当期的打分结果
     # -------------------
-    current_fund_score_path = fstrat_config.cc30_fund_score_path.format(date)
+    current_fund_score_path = '投顾-输出结果/'+"因子打分_{}.xlsx".format(date)
     assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"  # 需要取到当期的打分结果
     product_score = pd.read_excel(current_fund_score_path)
 
     # -------------------
     # 模型策略部分 因子权重
     # -------------------
-    # # CC30
-    # product_score['score'] = 0.2*product_score['jensen_beta'] + 0.4*product_score['sharpe'] + 0.1*product_score['TM_gamma'] + 0.1*product_score['TM_alpha'] + 0.2*product_score['stability']
     # # # 原版JW30
     # product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
     #  + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
     ## 新JW30——885001
-    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
-                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
-                              + product_score['TM_gamma'] + 0*(1 - product_score['size']) + product_score[
-                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
-                              + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / (9-1)
-
-    ##  新JW30——000906：
     # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
     #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
     #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
     #                               'delta_survey_6m'] + product_score['employee_holding_ratio']
-    #                           + (1 - product_score['tracking_error_000906']) + (1 - product_score['vol_nl'])) / 9
+    #                           + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
+
+    ##  新JW30——000906：
+    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+                              + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
+                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
+                              + (1 - product_score['tracking_error_000906']) + (1 - product_score['vol_nl'])) / 9
     # -------------------
     # 生成最终名单
     # -------------------
@@ -564,213 +604,15 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     quarter_to_backtest['ann_date'] = 0
     quarter_to_backtest['ann_date'] = quarter_to_backtest['quarter_date'].apply(quarter_to_annual)
 
-    # 计算date的前一年报日
-    temp_df = quarter_to_backtest.copy()
-    temp_df["backtest_date"] = pd.to_datetime(temp_df["backtest_date"], errors="coerce")
-    target_date = pd.to_datetime(date)
-    filtered = temp_df[temp_df["backtest_date"] <= target_date]
-    if not pd.api.types.is_datetime64_any_dtype(filtered["backtest_date"]):
-        raise TypeError("backtest_date column is not datetime type after filtering")
-    closest_row = filtered.loc[filtered["backtest_date"].idxmax()]
-    ann_date_temp = closest_row['ann_date']
-
-    # 对结果去重, 取前30名作为模型输出, 加入上一期结果的序号(如有，若为空则为新增产品)
-    # 季度调仓时，强制调仓
-    if date in adj_calendar1['model_date'].tolist():
-        ### 此行无用
-        shortlist_res = pd.concat([retained_product_score_with_info, product_score_with_info_exclude_retained], axis=0)[['date', 'product_id', 'product_name', 'score']].drop_duplicates().iloc[:shortlist_num]
-    # 周频监测时，仅当近一周超额回撤超过阈值触发临时调仓;仅当与上一次调仓不小于5个交易日才实行周度监测
-    elif trading_days < 5:
-        return
-    elif trading_days >= 5:
-        index_return = wind.wind_getIndexReturn(index, model_start_date, model_end_date, 'D')
-        index_return = index_return.reset_index()
-        index_return.columns = ['date', 'return']
-        index_return = index_return[index_return['date'].isin(SSE_calendar['date'].tolist())]
-        if index_delay == 0:
-            last_week_end = date
-            last_week_start = get_previous_trading_dates(date, num_days=4)[0]
-        else:
-            last_week_end = get_previous_trading_dates(date, num_days=index_delay)[0]
-            last_week_start = get_previous_trading_dates(date, num_days=4 + index_delay)[0]
-        index_return_last_week = index_return[
-            (index_return['date'] >= last_week_start) & (index_return['date'] <= last_week_end)].copy()
-        index_return_last_week.loc[:, 'return'] = index_return_last_week.loc[:, 'return'].apply(lambda x: x + 1)
-        if len(index_return_last_week) != 5:
-            print('length error, not 5')
-            print(index_return_last_week)
-        index_return_5days = index_return_last_week['return'].prod() - 1
-        temp_holding_df = previous_shortlist_res.copy()
-        temp_holding_df['weight'] = 1/len(previous_shortlist_res)
-        temp_nav_df = fstrat_getCC30ModelBackTestReturnSeries(get_previous_trading_dates(last_week_start, num_days=1)[0], last_week_end, 'W', fstrat_config.cc30_shortlist_res_path_backtest1,temp_holding_df)
-        ptfl_return =temp_nav_df[-1]-1
-        excess_return = ptfl_return - index_return_5days
-        ## 当超额回撤达到阈值时调仓：
-        if excess_return > -excess_drawdown_threshold:
-            return
-        else:
-            # PM去重与权重分配
-            product_score_with_info = product_score_with_info.sort_values('score', ascending=False)
-            # 数据预处理，仅从前999里优化
-            product_score_with_info = product_score_with_info.reset_index(drop=True)
-            if len(product_score_with_info) > 999:
-                product_score_with_info = product_score_with_info[:999]
-
-            fundlist = product_score_with_info['product_id'].tolist()
-
-            if index == '000906.SH':
-                # 中证800行业权重获取
-                index_df = wind.wind_getStockIndexComponentsWeight(
-                    'ZZ800',
-                    wind.wind_getLastTradeDates([ann_date_temp])[0],  # datetime.date instance
-                    wind.wind_getLastTradeDates([ann_date_temp])[0]
-                )
-                mapping = wind.wind_getIndustriesMap('SW', 1, date=ann_date_temp).drop(['date'], axis=1)
-                index_df = pd.merge(index_df, mapping, on=['stock_id'])
-                benchmark_industry_weights = index_df.groupby(['industry']).sum().reset_index()
-
-                stock_holdings = wind.wind_getMFStockHoldings(fundlist, freq='H', Top10=False,
-                                                              start_date=ann_date_temp,
-                                                              end_date=ann_date_temp)
-                stock_barra_temp = stock_barra[stock_barra['date'] <= date]
-                max_date = stock_barra_temp["date"].max()
-                stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-                stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'size']
-                index_barra_temp = index_barra[index_barra['date'] <= date]
-                max_date = index_barra_temp["date"].max()
-                index_barra_temp = index_barra_temp[index_barra_temp['date'] == max_date]
-                stock_holdings_size = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']],
-                                               on='stock_id',
-                                               how='left')
-                stock_holdings_size['exposure'] = np.where(
-                    (stock_holdings_size['exposure'].isna()) & (stock_holdings_size['stock_market'] == 'A'), -3,
-                    np.where(stock_holdings_size['exposure'].isna(), 0, stock_holdings_size['exposure']))
-                stock_barra_temp = stock_barra[stock_barra['date'] <= date]
-                max_date = stock_barra_temp["date"].max()
-                stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-                stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'sizenl']
-                stock_holdings_sizenl = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']],
-                                                 on='stock_id',
-                                                 how='left')
-                stock_holdings_sizenl['exposure'] = np.where(
-                    (stock_holdings_sizenl['exposure'].isna()) & (stock_holdings_sizenl['stock_market'] == 'A'), -3,
-                    np.where(stock_holdings_sizenl['exposure'].isna(), 0, stock_holdings_sizenl['exposure']))
-
-            # 根据基准类型生成行业权重
-            elif index == '885001.WI':
-                # 通过 WDS 获取基准指数的行业权重
-                dbconn = wind.wind_connectWindDB()
-                sql_equity_fund = "select F_INFO_WINDCODE, S_INFO_SECTOR " \
-                                  "from ChinaMutualFundSector " \
-                                  "where S_INFO_SECTORENTRYDT <= {0} AND (S_INFO_SECTOREXITDT >= {1} OR S_INFO_SECTOREXITDT IS NULL) "
-                date_temp = ann_date_temp.strftime("%Y%m%d")
-                equity_fund_df = pd.read_sql_query(sql_equity_fund.format(date_temp, date_temp), dbconn)
-                equity_fund_df = equity_fund_df[
-                    equity_fund_df['s_info_sector'].str[:10].isin(['2001010101', '2001010201'])]
-                equity_fund_list = equity_fund_df['f_info_windcode'].unique().tolist()
-                date_temp = ann_date_temp
-
-                # 通过 WDS 获取基准指数的行业权重
-                if len(equity_fund_list) > 502:
-                    def process_chunks(equity_fund_list, chunk_size=500):
-                        All_MF_stockholding = []
-                        for i in range(0, len(equity_fund_list), chunk_size):
-                            chunk = equity_fund_list[i:i + chunk_size]
-                            result = wind.wind_getMFStockHoldings(product_id=chunk, freq='H', Top10=False,
-                                                                  start_date=date_temp,
-                                                                  end_date=date_temp)
-                            All_MF_stockholding.append(result)
-                            # 释放内存
-                            del result
-                        return pd.concat(All_MF_stockholding, ignore_index=True)
-
-                    # 调用函数
-                    All_MF_stockholding = process_chunks(equity_fund_list)
-                else:
-                    All_MF_stockholding = wind.wind_getMFStockHoldings(product_id=equity_fund_list, freq='H',
-                                                                       Top10=False,
-                                                                       start_date=date_temp, end_date=date_temp)
-                index_holding = All_MF_stockholding[['stock_id', 'stk_value_to_nav']]
-                index_holding = index_holding.groupby('stock_id', as_index=False)['stk_value_to_nav'].sum()
-                index_holding.rename(columns={'stk_value_to_nav': 'weight'}, inplace=True)
-                index_holding['weight'] = index_holding['weight'] / index_holding['weight'].sum()
-                mapping = wind.wind_getIndustriesMap('SW', 1, date=ann_date_temp).drop(['date'], axis=1)
-                index_holding = pd.merge(index_holding, mapping, on=['stock_id'])
-                benchmark_industry_weights = index_holding.groupby(['industry']).sum().reset_index()
-
-                stock_holdings = wind.wind_getMFStockHoldings(fundlist, freq='H', Top10=False,
-                                                              start_date=ann_date_temp,
-                                                              end_date=ann_date_temp)
-                stock_barra_temp = stock_barra[stock_barra['date'] <= date]
-                max_date = stock_barra_temp["date"].max()
-                stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-                stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'size']
-                size_exposure = stock_barra_temp[['stock_id', 'exposure']]
-                merged_data = pd.merge(index_holding, size_exposure, on='stock_id', how='inner')
-                merged_data['weighted_exposure'] = merged_data['weight'] * merged_data['exposure']
-                index_size_exposure = merged_data['weighted_exposure'].sum()
-                stock_holdings_size = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']],
-                                               on='stock_id',
-                                               how='left')
-                stock_holdings_size['exposure'] = np.where(
-                    (stock_holdings_size['exposure'].isna()) & (stock_holdings_size['stock_market'] == 'A'), -3,
-                    np.where(stock_holdings_size['exposure'].isna(), 0, stock_holdings_size['exposure']))
-                stock_barra_temp = stock_barra[stock_barra['date'] <= date]
-                max_date = stock_barra_temp["date"].max()
-                stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-                stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'sizenl']
-                sizenl_exposure = stock_barra_temp[['stock_id', 'exposure']]
-                merged_data = pd.merge(index_holding, sizenl_exposure, on='stock_id', how='inner')
-                merged_data['weighted_exposure'] = merged_data['weight'] * merged_data['exposure']
-                index_sizenl_exposure = merged_data['weighted_exposure'].sum()
-                stock_holdings_sizenl = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']],
-                                                 on='stock_id',
-                                                 how='left')
-                stock_holdings_sizenl['exposure'] = np.where(
-                    (stock_holdings_sizenl['exposure'].isna()) & (stock_holdings_sizenl['stock_market'] == 'A'), -3,
-                    np.where(stock_holdings_sizenl['exposure'].isna(), 0, stock_holdings_sizenl['exposure']))
-                index_barra_temp = pd.DataFrame({
-                    'size': [index_size_exposure],  # 计算得到的 Barra Size 暴露
-                    'sizenl': [index_sizenl_exposure],  #
-                })
-
-            # 执行增强版优化
-            optimized_results = optimize_portfolio(
-                product_score_with_info,
-                benchmark_industry_weights,
-                temp_ind_deviation,
-                stock_holdings_size,
-                index_barra_temp,
-                temp_deviation,
-                stock_holdings_sizenl,
-                temp_deviation
-            )
-            optimized_weights = optimized_results[0]
-            optimized_weights = np.where(optimized_weights < 0.005-1e-8, 0, optimized_weights)  # 剔除小于0.5%的仓位
-            optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
-            product_score_with_info['weight'] = optimized_weights
-
-            # 提取行业偏离和市值偏离
-            industry_deviations = optimized_results[1]
-            size_deviation = optimized_results[3]
-
-            # 将市值偏离添加到结果中
-            df_size_deviation = pd.DataFrame({'date': [date], 'size_deviation': [size_deviation]})
-
-            # 将行业偏离和市值偏离合并
-            df_deviations = pd.DataFrame.from_dict(industry_deviations, orient='index', columns=['权重偏离值']).reset_index()
-            df_deviations['date'] = date
-            df_deviations = pd.merge(df_deviations, df_size_deviation, on='date', how='left')
-
-            # 选择前30只基金
-            fund_result = product_score_with_info.nlargest(shortlist_num, 'weight')
-
-            # 更新缓存
-            shortlist_res = pd.merge(fund_result, previous_shortlist_res[['product_id', 'previous_index']],
-                                   on='product_id', how='left')
-            shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format(date))
-            shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format("上一期持仓"))
-            return shortlist_res
+    # # 计算date的前一年报日
+    # temp_df = quarter_to_backtest.copy()
+    # temp_df["backtest_date"] = pd.to_datetime(temp_df["backtest_date"], errors="coerce")
+    # target_date = pd.to_datetime(date)
+    # filtered = temp_df[temp_df["backtest_date"] <= target_date]
+    # if not pd.api.types.is_datetime64_any_dtype(filtered["backtest_date"]):
+    #     raise TypeError("backtest_date column is not datetime type after filtering")
+    # closest_row = filtered.loc[filtered["backtest_date"].idxmax()]
+    # ann_date_temp = closest_row['ann_date']
 
     ### 季度调仓
     # PM去重与权重分配
@@ -904,46 +746,51 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
     )
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
-
-
-    # 优化组合
-    optimized_results = optimize_portfolio(
-        product_score_with_info,
-        benchmark_industry_weights,
-        original_ind_deviation,
-        stock_holdings_size,
-        index_barra_temp,
-        original_deviation,
-        stock_holdings_sizenl,
-        original_deviation
-    )
-
-    optimized_weights = optimized_results[0]
-    optimized_weights = np.where(optimized_weights<0.005-1e-8, 0, optimized_weights) # 剔除小于0.5%的仓位
-    optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
-    product_score_with_info['weight'] = optimized_weights
-
-    # 提取行业偏离和市值偏离
-    industry_deviations = optimized_results[1]
-    size_deviation = optimized_results[3]
-
-    # 将市值偏离添加到结果中
-    df_size_deviation = pd.DataFrame({'date': [date], 'size_deviation': [size_deviation]})
-
-    # 将行业偏离和市值偏离合并
-    df_deviations = pd.DataFrame.from_dict(industry_deviations, orient='index', columns=['权重偏离值']).reset_index()
-    df_deviations['date'] = date
-    df_deviations = pd.merge(df_deviations, df_size_deviation, on='date', how='left')
-
-    # 选择前30只基金
-    fund_result = product_score_with_info.nlargest(shortlist_num, 'weight')
-
-    # 更新缓存
-    shortlist_res = pd.merge(fund_result, previous_shortlist_res[['product_id', 'previous_index']],
-                             on='product_id', how='left')
-    shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format(date))
-    shortlist_res.to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format("上一期持仓"))
-    return shortlist_res
+    # 输出因子打分结果
+    product_score_with_info_output = pd.merge(product_score_with_info, product_score, on = 'product_id', how = 'left')
+    product_score_with_info_output.to_excel('投顾-输出结果/'+"基金打分结果_{}.xlsx".format(date))
+    #
+    # # 优化组合
+    # optimized_results = optimize_portfolio(
+    #     product_score_with_info,
+    #     benchmark_industry_weights,
+    #     original_ind_deviation,
+    #     stock_holdings_size,
+    #     index_barra_temp,
+    #     original_deviation,
+    #     stock_holdings_sizenl,
+    #     original_deviation
+    # )
+    #
+    # optimized_weights = optimized_results[0]
+    # optimized_weights = np.where(optimized_weights<0.005-1e-8, 0, optimized_weights) # 剔除小于0.5%的仓位
+    # optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
+    # product_score_with_info['weight'] = optimized_weights
+    #
+    # # 提取行业偏离和市值偏离
+    # industry_deviations = optimized_results[1]
+    # size_deviation = optimized_results[3]
+    #
+    # # 将市值偏离添加到结果中
+    # df_size_deviation = pd.DataFrame({'date': [date], 'size_deviation': [size_deviation]})
+    #
+    # # 将行业偏离和市值偏离合并
+    # df_deviations = pd.DataFrame.from_dict(industry_deviations, orient='index', columns=['权重偏离值']).reset_index()
+    # df_deviations['date'] = date
+    # df_deviations = pd.merge(df_deviations, df_size_deviation, on='date', how='left')
+    #
+    # # 选择前30只基金
+    # fund_result = product_score_with_info.nlargest(30, 'weight')
+    #
+    # # 更新缓存
+    # product_score = product_score.sort_values('score', ascending= False).reset_index(drop = True).reset_index().rename(columns = {'index':'rank'})
+    # product_score = product_score.drop(columns = 'score')
+    # shortlist_res = pd.merge(fund_result, product_score,
+    #                          on='product_id', how='left')
+    # shortlist_res.rename(columns = {'mdd':'mdd_反向', 'size':'size_反向', 'tracking_error_885001':'tracking_error_885001_反向',
+    #                                 'tracking_error_000906':'tracking_error_000906_反向', 'vol_nl':'vol_nl_反向'})
+    # shortlist_res.to_excel('投顾-输出结果/'+"基金选择_{}.xlsx".format(date))
+    return product_score_with_info_output
 
 
 #############################################################################################
@@ -1041,34 +888,19 @@ def fstrat_getCC30ModelBackTestReturnSeries(
 
 if __name__ == '__main__':
     # 模型回溯区间
-    model_start_date = datetime.date(2014, 1, 28)
+    model_start_date = datetime.date(2024, 12, 31)
     # model_start_date = datetime.date(2024,7,31)
-    model_end_date = datetime.date(2025, 2, 28)
+    model_end_date = datetime.date(2025, 4, 30)
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
-    if model_freq == 'Q':  # 调仓频率
-        trading_calendar = wind.wind_getSSECalendar()  # 交易日历，用于回测时过滤非交易日净值数据
-        # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
-        adj_calendar = fstrat_getAdjustmentCalendar(freq=model_freq)
-        adj_calendar['next_effective_date'] = adj_calendar['effective_date'].shift(-1)
-    elif model_freq == 'W':
-        trading_calendar = wind.wind_getSSECalendar()  # 交易日历，用于回测时过滤非交易日净值数据
-        # 初始化前一个模型日期的结果为空，保证首次运行时不参考上一期模型结果(即不考虑缓冲池产品的保留，第一期结果仅根据打分得到)
-        adj_calendar1 = fstrat_getAdjustmentCalendar(freq='Q')
-        adj_calendar2 = fstrat_getAdjustmentCalendar(freq='W')
-        adj_calendar = pd.concat([adj_calendar1, adj_calendar2], axis=0).drop_duplicates(subset=["model_date"])
-        adj_calendar.dropna(inplace = True)
-        adj_calendar.sort_values(by = 'model_date', inplace = True)
-        adj_calendar['next_effective_date'] = adj_calendar['effective_date'].shift(-1)
-    model_init_date = adj_calendar[adj_calendar['model_date'] < model_start_date]['model_date'].iloc[-1]
-    # if not os.path.exists(fstrat_config.cc30_shortlist_res_path_backtest1.format(model_init_date)):
-    #     pd.DataFrame(columns=['product_id']).to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format(model_init_date))
-    pd.DataFrame(columns=['product_id']).to_excel(fstrat_config.cc30_shortlist_res_path_backtest1.format("上一期持仓"))
-    adj_calendar = adj_calendar[(adj_calendar['model_date'] >= model_start_date) & (adj_calendar['model_date'] <= model_end_date)]
+
+    ### 如果希望在指定日期运算，请运行以下代码
+    model_date = datetime.date(2025,4,30)
+    ann_date = datetime.date(2024,12,31)
+    ###
 
     # # cal & cache factors
-    for model_date in adj_calendar['model_date'].to_list():
-        print(model_date)
-        fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='000906.SH', rf=0.03)
+    print(model_date)
+    fstrat_getCC30ProductScore(date=model_date, path = '投顾-输出结果/投顾固收+基金池_2025-04-30.xlsx', model_freq=model_freq, benchmark='000906.SH', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 
@@ -1084,17 +916,13 @@ if __name__ == '__main__':
     # 步骤2：提取datetime.date对象（保留日期部分）
     index_barra['date'] = index_barra['date'].dt.date
 
-
-    for model_date in adj_calendar['model_date'].to_list():
-        print(model_date)
-        # fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=10,
-        #                                                          original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=0.01,temp_deviation=0.3, index='000906.SH', index_delay=0,
-        #                                                          stock_barra=stock_barra, index_barra=index_barra )
-        fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='000906.SH', index_delay=0,
-                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
+    # 基金选择
+    print(model_date)
+    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, '投顾-输出结果/投顾固收+基金池_2025-04-30.xlsx',model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
+                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
     # model_start_date = datetime.date(2022,10,31)
 
     # back-test model from cached files
-    fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date,
-                                            path = fstrat_config.cc30_shortlist_res_path_backtest1, model_freq=model_freq)
+    # fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date,
+    #                                         path = fstrat_config.cc30_shortlist_res_path_backtest1, model_freq=model_freq)
