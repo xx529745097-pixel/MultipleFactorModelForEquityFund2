@@ -1091,7 +1091,7 @@ if __name__ == '__main__':
         #                                                          original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=0.01,temp_deviation=0.3, index='000906.SH', index_delay=0,
         #                                                          stock_barra=stock_barra, index_barra=index_barra )
         fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='000906.SH', index_delay=0,
+                                                                 original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='000906.SH', index_delay=0,
                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
     # model_start_date = datetime.date(2022,10,31)
 
