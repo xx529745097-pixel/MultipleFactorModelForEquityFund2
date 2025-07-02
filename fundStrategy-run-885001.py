@@ -520,14 +520,14 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # 模型策略部分 因子权重
     # -------------------
     # # # 原版JW30
-    product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
-     + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
+    # product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
+    #  + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
     ## 新JW30——885001
-    # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
-    #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
-    #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
-    #                               'delta_survey_6m'] + product_score['employee_holding_ratio']
-    #                           + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
+    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+                              + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
+                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
+                              + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
 
     ##  新JW30——000906：
     # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
@@ -867,8 +867,8 @@ if __name__ == '__main__':
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,4,30)
-    ann_date = datetime.date(2024,12,31)
+    model_date = datetime.date(2025,1,27)
+    ann_date = datetime.date(2024,6,30)
     ###
 
     # # cal & cache factors
@@ -892,8 +892,8 @@ if __name__ == '__main__':
     # 基金选择
     print(model_date)
     fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                 original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
-                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
+                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
+                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
     # model_start_date = datetime.date(2022,10,31)
 
     # back-test model from cached files
