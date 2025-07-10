@@ -1202,10 +1202,10 @@ def wind_getMFStats(
     dbconn = wind_connectWindDB()
     if MF == True:
         stats_sql = "select trade_dt, s_info_windcode, {0} " \
-                    " from ChinaMFPerformance where TRADE_DT <= '{1}' and TRADE_DT >= '{2}' and S_INFO_WINDCODE in {3}"
+                    " from ChinaMFPerformance where TRADE_DT <= '{1}' and TRADE_DT >= '{2}' and S_INFO_WINDCODE in {3} order by s_info_windcode, trade_dt "
     else:
         stats_sql = "select trade_dt, s_info_windcode, {0} " \
-                    " from FundSAMPerformance where TRADE_DT <= '{1}' and TRADE_DT >= '{2}' and S_INFO_WINDCODE in {3}"
+                    " from FundSAMPerformance where TRADE_DT <= '{1}' and TRADE_DT >= '{2}' and S_INFO_WINDCODE in {3} order by s_info_windcode, trade_dt "
     if len(fcode) == 1:     # list长度为1时候无法使用tuple
         fcode = ('\''+fcode[0]+'\'')
     else:
