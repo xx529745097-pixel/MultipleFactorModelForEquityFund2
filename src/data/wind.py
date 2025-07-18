@@ -1214,8 +1214,6 @@ def wind_getMFStats(
     fcode_array = [fcode[i:i+500] for i in range(0, len(fcode), 500)]
     all_stats_array = []
     for i in range(len(fcode_array)):
-        if len(fcode_array[i]) == 1:  # list长度为1时候无法使用tuple
-            fcode_array[i] = ('\'' + fcode_array[i][0] + '\'')
         thisStats = pd.read_sql_query(stats_sql.format(stats_str, enddate.strftime('%Y%m%d'), startdate.strftime('%Y%m%d'), fcode_array[i]),
                                       dbconn)
         all_stats_array.append(thisStats)
