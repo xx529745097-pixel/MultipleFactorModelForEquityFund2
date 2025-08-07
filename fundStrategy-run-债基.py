@@ -17,6 +17,32 @@ import warnings
 warnings.filterwarnings('ignore')
 import pulp
 
+
+def towindcode(x):
+    if x[0] == '1':
+        x = x[:-2] + 'SZ'
+    if x[0] == '5':
+        x = x[:-2] + 'SH'
+    return x
+
+def otc_to_inside(list1):
+    import sqlalchemy
+    import os
+
+    os.environ['NLS_LANG'] = 'SIMPLIFIED CHINESE_CHINA.UTF8'
+    ora_connect_str  = 'oracle://xujunwei:40!VEz6QX@10.23.153.15:21010/wind'
+    dbengine = sqlalchemy.create_engine(ora_connect_str, poolclass=sqlalchemy.pool.NullPool)
+    dbconn = dbengine.connect()
+    sql = "select F_INFO_WINDCODE " \
+          "from ChinaMutualFundDescription "
+    df = pd.read_sql_query(sql, dbconn)
+    list2 = df['f_info_windcode'].tolist()
+    for i in range(len(list1)):
+        if list1[i] not in list2:
+            list1[i] = towindcode(list1[i])
+    return list1
+
+
 # -----------------------------------------------
 # 获取模型运行日期t和调仓日期t+2交易日
 # 符合公募场外申购赎回规则：t日收盘后模型给出结果，t+1日完成申赎，t+2日确认份额开始计算收益
@@ -83,14 +109,75 @@ def fstrat_getCC30EquityMFPool(
         fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
 
+# ------------------------------------------------
+# 计算基金的jensen，选股能力(alpha)，选时能力(gamma)，Sharpe
+# jensen-alpha = (ri-rf) - beta_i(rm-rf)
+# 选股能力(alpha)，选时能力(gamma)： r-rf = alpha + beta(rm-rf) + gamma(rm-rf)**2 + epsilon
+# ------------------------------------------------
+def anlsMF_SelectedRatingIndicator(
+        product_ids,                                    # list
+        startdate,                                      # datetime.date
+        enddate,                                        # datetime.datezxzq
+        freq='D',                                       # freq, 'D' or 'W'
+        benchmark = '000300.SH',                        # benchmark, str.
+        rf = 0.03                                       # risk-free rate (annual)
+):
+    retDf = wind.wind_getMFStats(product_ids, startdate-relativedelta(weeks=4), enddate, ['f_avgreturn_day'])
+    wind_calendar = wind.wind_getSSECalendar()
+    retDf = retDf[retDf['date'].isin(wind_calendar['date'].to_list())].fillna(0)  # 仅保留交易日，缺失值填充为0
+    if freq == 'W':  # convert to weekly freq
+        retDf = fof_calendar.calender_convertDailyReturnToWeekly(retDf, date_column_name='date', return_column_name='f_avgreturn_day', id_column_name='product_id')
+    retDf = pd.pivot_table(retDf, values='f_avgreturn_day', index='date', columns='product_id').loc[startdate:enddate]
+    retDf = retDf.fillna(0)  # 部分封闭期基金只披露周度净值，处理nan项。
+    idxret = wind.wind_getIndexReturn(benchmark, startdate, enddate, freq)
+    # 以end_date作为考察时点
+    latest_aum_info = wind.wind_getMFLatestAUM(startdate, enddate)
+    # # 以end_date作为考察时点的6个月调研数量变动因子
+    # delta_survey_6m_data = anlsMF_getMFDeltaSurveyIndicator(enddate, tracked_months=6)
+    # delta_survey_6m = pd.DataFrame(product_ids, columns=['product_id'])
+    # delta_survey_6m = pd.merge(delta_survey_6m, delta_survey_6m_data[['product_id', 'delta_survey']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
+    # 以end_date作为考察时点的最新员工自购比例
+    employee_holding_ratio_data = wind.wind_getMFLatestHoldingStructure(enddate)
+    employee_holding_ratio = pd.DataFrame(product_ids, columns=['product_id'])
+    employee_holding_ratio = pd.merge(employee_holding_ratio, employee_holding_ratio_data[['product_id', 'employee_holding_ratio']], on='product_id', how='left').fillna(0)  # 缺失值填充为0
+    # # 相对885001跟踪误差(超额波动率因子)
+    # tracking_error_885001 = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='std', benchmark='885001.WI')
+    # # 相对000906跟踪误差(超额波动率因子)
+    # tracking_error_000906 = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='std', benchmark='000906.SH')
+    # # 收益非线性波动率，log(1 + 100*vol)^3对log(1 + 100*vol)线性回归的残差项
+    # vol_nl = anlsMF_getMFVolatilityIndicator(product_ids, startdate, enddate, freq, vol_type='nl', benchmark=None)
+    indicator_result = pd.DataFrame(columns=[*product_ids], index=['jensen_beta', 'jensen_alpha', 'sharpe', 'mdd', 'employee_holding_ratio'])
+    for product in product_ids:
+        jensen_alpha, jensen_beta = MFanls.basicCal_jensen(retDf[product], idxret, freq, rf)  # CAPM Model
+        indicator_result.loc['jensen_beta', product] = jensen_beta
+        indicator_result.loc['jensen_alpha', product] = jensen_alpha
+        # tm_alpha, tm_beta, tm_gamma = basicCal_AlphaGamma(retDf[product], idxret, freq, rf)  # TM Model
+        # indicator_result.loc['TM_gamma', product] = tm_gamma
+        # indicator_result.loc['TM_alpha', product] = tm_alpha
+        indicator_result.loc['sharpe', product] = MFanls.basicCal_getSharpeRatio(retDf[product], freq, rf)
+        indicator_result.loc['mdd', product] = abs(MFanls.basicCal_getMaxDrawdown(retDf[product]))  # 使用mdd绝对值，反向指标
+        # indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
+        # indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]
+        indicator_result.loc['employee_holding_ratio', product] = employee_holding_ratio[employee_holding_ratio['product_id'] == product]['employee_holding_ratio'].iloc[0]
+        # indicator_result.loc['tracking_error_885001', product] = tracking_error_885001[tracking_error_885001['product_id'] == product]['vol_std'].iloc[0]
+        # indicator_result.loc['tracking_error_000906', product] = tracking_error_000906[tracking_error_000906['product_id'] == product]['vol_std'].iloc[0]
+        # indicator_result.loc['vol_nl', product] = vol_nl[vol_nl['product_id'] == product]['vol_nl'].iloc[0]
+    indicator_result = indicator_result.T.reset_index()
+    indicator_result = indicator_result.rename({'index': 'product_id'}, axis=1)
+    indicator_result.rename(columns={'index': 'factor'}, inplace=True)
+    return indicator_result
+
+
+
 # -----------------------------------------
 # 因子计算模块 获取模型因子得分并缓存
 # -----------------------------------------
 def fstrat_getCC30ProductScore(
     date,                   # 考察日期
+    path,
     model_freq='Q',             # 模型调仓频率 决定了模型的运行日期
     benchmark='000906.SH',  # 指标计算基准
-    rf=0.03,                # 无风险利率
+    rf=0.03                # 无风险利率
 ):
     # 计算最近两次模型运行日期
     if model_freq == 'Q':
@@ -104,27 +191,33 @@ def fstrat_getCC30ProductScore(
     # assert date in adj_calendar['model_date'].to_list(), "入参date需为模型运行日期"
     anls_start_date = date - datetime.timedelta(days=365)
     # 获取基金池和当期模型打分并缓存
-    fund_universe = fstrat_getCC30EquityMFPool(date,company_id=True)
-    # 剔除掉不在备选库的基金公司的产品
-    fundCompanyPool = pd.read_excel(fstrat_config.cc30_run_path+"基金公司库.xlsx")
-    fundCompanyPool = fundCompanyPool[fundCompanyPool['所属库'] == '基金公司备选库']
-    fundCompanyPool2 = fundCompanyPool['基金公司代码'].to_list()
+    fund_universe = pd.read_excel(path)
+    fund_universe['product_id'] = otc_to_inside(fund_universe['product_id'])
+    sql1 = "select F_INFO_WINDCODE as product_id, F_INFO_ISINITIAL as is_initial " \
+           "from ChinaMutualFundDescription "
+    df1 = pd.read_sql_query(sql1, wind.wind_connectWindDB())
+    fund_universe = pd.merge(fund_universe, df1, on = 'product_id')
+    fund_universe = fund_universe[fund_universe['is_initial']==1].reset_index(drop = True)
+    # # 剔除掉不在备选库的基金公司的产品
+    # fundCompanyPool = pd.read_excel(fstrat_config.cc30_run_path+"基金公司库.xlsx")
+    # fundCompanyPool = fundCompanyPool[fundCompanyPool['所属库'] == '基金公司备选库']
+    # fundCompanyPool2 = fundCompanyPool['基金公司代码'].to_list()
     # sql_1 = "select COMP_NAME, COMP_SNAME, COMP_ID " \
     #         "from CFundIntroduction "
     # dbconn = wind.wind_connectWindDB()
     # fundcompanylist = pd.read_sql_query(sql_1, dbconn)
-    fund_universe = fund_universe[fund_universe['company_id'].isin(fundCompanyPool2)]
+    # fund_universe = fund_universe[fund_universe['company_id'].isin(fundCompanyPool2)]
 
     # 缓存基金池 数据带PM不去重
-    fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
+    # fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
     # 因子计算
     product_ids = fund_universe['product_id'].unique().tolist()
-    product_indicator_info = MFanls.anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
+    product_indicator_info = anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
     indicator_score = product_indicator_info.set_index('product_id').rank(pct=True, ascending=True).reset_index()   # 将因子值转化为排名，越大表现越好。
     weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, date)   # 周度收益率的排名稳定性
     product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
     # 缓存因子打分
-    product_score.to_excel(fstrat_config.cc30_run_path+"因子打分_{}.xlsx".format(date), index=None)
+    product_score.to_excel("债基-输出结果/因子打分_{}.xlsx".format(date), index=None)
     return product_score
 
 # -----------------------------------------
@@ -330,6 +423,7 @@ def getBackTestDates(startdate, enddate):
 def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     date,              # 考察日期 需为模型运行日期
     ann_date_temp,     #最近一期年报
+    fund_universe_path,
     model_freq='Q',    # 模型调仓频率 决定了模型的运行日期
     shortlist_num=30,  # 模型最终输出的产品个数
     buffer_size=90,    # 缓冲池大小
@@ -504,15 +598,13 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # -------------------------
     # 读取当期基金池 包含多行pm信息
     # -------------------------
-    fund_universe_path = fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date)
-    assert os.path.exists(fund_universe_path), f"未找到{fund_universe_path}，请先缓存当期基金池结果"  # 需要取到当期的打分结果
     fund_universe = pd.read_excel(fund_universe_path)
     fund_universe['date'] = pd.to_datetime(fund_universe['date']).dt.date
 
     # -------------------
     # 读取当期的打分结果
     # -------------------
-    current_fund_score_path = fstrat_config.cc30_run_path+"因子打分_{}.xlsx".format(date)
+    current_fund_score_path = '债基-输出结果/'+"债基因子打分_{}.xlsx".format(date)
     assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"  # 需要取到当期的打分结果
     product_score = pd.read_excel(current_fund_score_path)
 
@@ -523,18 +615,16 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # product_score['score'] = (0.143 * product_score['sharpe'] - 0.071 * product_score['mdd'] - 0.071 * product_score['jensen_beta'] + 0.143 * product_score['jensen_alpha']
     #  + 0.143 * product_score['TM_gamma'] - 0.143 * product_score['size'] + 0.143 * product_score['delta_survey_6m'] + 0.143 * product_score['employee_holding_ratio']) + 0.2850
     ## 新JW30——885001
-    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
-                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
-                              + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
-                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
-                              + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
-
-    ##  新JW30——000906：
     # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
     #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
     #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
     #                               'delta_survey_6m'] + product_score['employee_holding_ratio']
-    #                           + (1 - product_score['tracking_error_000906']) + (1 - product_score['vol_nl'])) / 9
+    #                           + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
+
+    ##  新JW30——000906：
+    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+                               + product_score['employee_holding_ratio']) / 4
     # -------------------
     # 生成最终名单
     # -------------------
@@ -721,49 +811,49 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
     # 输出因子打分结果
     product_score_with_info_output = pd.merge(product_score_with_info, product_score, on = 'product_id', how = 'left')
-    product_score_with_info_output.to_excel(fstrat_config.cc30_run_path+"基金打分结果_{}.xlsx".format(date))
-
-    # 优化组合
-    optimized_results = optimize_portfolio(
-        product_score_with_info,
-        benchmark_industry_weights,
-        original_ind_deviation,
-        stock_holdings_size,
-        index_barra_temp,
-        original_deviation,
-        stock_holdings_sizenl,
-        original_deviation
-    )
-
-    optimized_weights = optimized_results[0]
-    optimized_weights = np.where(optimized_weights<0.005-1e-8, 0, optimized_weights) # 剔除小于0.5%的仓位
-    optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
-    product_score_with_info['weight'] = optimized_weights
-
-    # 提取行业偏离和市值偏离
-    industry_deviations = optimized_results[1]
-    size_deviation = optimized_results[3]
-
-    # 将市值偏离添加到结果中
-    df_size_deviation = pd.DataFrame({'date': [date], 'size_deviation': [size_deviation]})
-
-    # 将行业偏离和市值偏离合并
-    df_deviations = pd.DataFrame.from_dict(industry_deviations, orient='index', columns=['权重偏离值']).reset_index()
-    df_deviations['date'] = date
-    df_deviations = pd.merge(df_deviations, df_size_deviation, on='date', how='left')
-
-    # 选择前30只基金
-    fund_result = product_score_with_info.nlargest(30, 'weight')
-
-    # 更新缓存
-    product_score = product_score.sort_values('score', ascending= False).reset_index(drop = True).reset_index().rename(columns = {'index':'rank'})
-    product_score = product_score.drop(columns = 'score')
-    shortlist_res = pd.merge(fund_result, product_score,
-                             on='product_id', how='left')
-    shortlist_res.rename(columns = {'mdd':'mdd_反向', 'size':'size_反向', 'tracking_error_885001':'tracking_error_885001_反向',
-                                    'tracking_error_000906':'tracking_error_000906_反向', 'vol_nl':'vol_nl_反向'})
-    shortlist_res.to_excel(fstrat_config.cc30_run_path+"基金选择_{}.xlsx".format(date))
-    return shortlist_res
+    product_score_with_info_output.to_excel('债基-输出结果/'+"债基基金打分结果_{}.xlsx".format(date))
+    #
+    # # 优化组合
+    # optimized_results = optimize_portfolio(
+    #     product_score_with_info,
+    #     benchmark_industry_weights,
+    #     original_ind_deviation,
+    #     stock_holdings_size,
+    #     index_barra_temp,
+    #     original_deviation,
+    #     stock_holdings_sizenl,
+    #     original_deviation
+    # )
+    #
+    # optimized_weights = optimized_results[0]
+    # optimized_weights = np.where(optimized_weights<0.005-1e-8, 0, optimized_weights) # 剔除小于0.5%的仓位
+    # optimized_weights = optimized_weights / optimized_weights.sum()  # 如果限制了单策略规模，在数据比较少的情况下，可能仓位不到100%，扩到100%
+    # product_score_with_info['weight'] = optimized_weights
+    #
+    # # 提取行业偏离和市值偏离
+    # industry_deviations = optimized_results[1]
+    # size_deviation = optimized_results[3]
+    #
+    # # 将市值偏离添加到结果中
+    # df_size_deviation = pd.DataFrame({'date': [date], 'size_deviation': [size_deviation]})
+    #
+    # # 将行业偏离和市值偏离合并
+    # df_deviations = pd.DataFrame.from_dict(industry_deviations, orient='index', columns=['权重偏离值']).reset_index()
+    # df_deviations['date'] = date
+    # df_deviations = pd.merge(df_deviations, df_size_deviation, on='date', how='left')
+    #
+    # # 选择前30只基金
+    # fund_result = product_score_with_info.nlargest(30, 'weight')
+    #
+    # # 更新缓存
+    # product_score = product_score.sort_values('score', ascending= False).reset_index(drop = True).reset_index().rename(columns = {'index':'rank'})
+    # product_score = product_score.drop(columns = 'score')
+    # shortlist_res = pd.merge(fund_result, product_score,
+    #                          on='product_id', how='left')
+    # shortlist_res.rename(columns = {'mdd':'mdd_反向', 'size':'size_反向', 'tracking_error_885001':'tracking_error_885001_反向',
+    #                                 'tracking_error_000906':'tracking_error_000906_反向', 'vol_nl':'vol_nl_反向'})
+    # shortlist_res.to_excel('投顾-输出结果/'+"基金选择_{}.xlsx".format(date))
+    return product_score_with_info_output
 
 
 #############################################################################################
@@ -861,19 +951,19 @@ def fstrat_getCC30ModelBackTestReturnSeries(
 
 if __name__ == '__main__':
     # 模型回溯区间
-    model_start_date = datetime.date(2025, 3, 31)
+    model_start_date = datetime.date(2024, 12, 31)
     # model_start_date = datetime.date(2024,7,31)
-    model_end_date = datetime.date(2025, 7, 31)
+    model_end_date = datetime.date(2025, 4, 30)
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,7,31)
+    model_date = datetime.date(2025,4,1)
     ann_date = datetime.date(2024,12,31)
     ###
 
     # # cal & cache factors
     print(model_date)
-    fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='885001.WI', rf=0.03)
+    fstrat_getCC30ProductScore(date=model_date, path = '债基-输出结果/债基基金池_2025-04-01.xlsx', model_freq=model_freq, benchmark='885008.WI', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 
@@ -891,9 +981,9 @@ if __name__ == '__main__':
 
     # 基金选择
     print(model_date)
-    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
-                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
+    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, '债基-输出结果/债基基金池_2025-04-01.xlsx',model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+                                                                 original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885008.WI', index_delay=1,
+                                                                 stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
     # model_start_date = datetime.date(2022,10,31)
 
     # back-test model from cached files
