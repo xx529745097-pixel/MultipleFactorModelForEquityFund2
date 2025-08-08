@@ -967,7 +967,7 @@ if __name__ == '__main__':
     model_date = datetime.date(2025,1,1)
     ann_date = datetime.date(2024,6,30)
     ###
-    path = '债基-输出结果/固收+基金池_2024-07-01.xlsx'
+    path = '债基-输出结果/固收+基金池_2025-01-01.xlsx'
     path1 = path[:-5]+"_L.xlsx"
     path2 = path[:-5]+"_M.xlsx"
     path3 = path[:-5]+"_HandF.xlsx"
