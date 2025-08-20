@@ -167,7 +167,148 @@ def anlsMF_SelectedRatingIndicator(
     indicator_result.rename(columns={'index': 'factor'}, inplace=True)
     return indicator_result
 
+import statsmodels.api as sm
+def calculate_fund_factors(fund_pool, start_date=None, end_date=None):
+    """
+    计算基金因子值（剥离同类基金风险后的alpha）
+    :param fund_pool: 基金池列表，如 ['000024.OF', '000054.OF', '000069.OF']
+    :param start_date: 开始日期（datetime.date格式），可选
+    :param end_date: 结束日期（datetime.date格式），可选
+    :return: 包含基金因子值的Series
+    """
+    # 1. 设置日期范围（默认过去一年）
+    if end_date is None:
+        end_date = datetime.date.today()
+    if start_date is None:
+        start_date = end_date - datetime.timedelta(days=365)
 
+    print(f"计算基金因子: {start_date} 至 {end_date}")
+
+    # 2. 获取基金收益率数据
+    try:
+        # 调用您提供的函数获取基金收益率
+        returns_df = wind.wind_getMFSingleStats(
+            fcode=fund_pool,
+            startdate=start_date,
+            enddate=end_date,
+            stat='f_avgreturn_day'
+        )
+
+        # 检查数据有效性
+        if returns_df.empty:
+            raise ValueError("获取的收益率数据为空")
+        if len(returns_df.columns) < len(fund_pool):
+            missing_funds = set(fund_pool) - set(returns_df.columns)
+            print(f"警告: 部分基金无数据 - {', '.join(missing_funds)}")
+
+    except Exception as e:
+        print(f"获取基金收益率数据失败: {str(e)}")
+        # 返回空Series避免后续错误
+        return pd.Series(index=fund_pool, dtype=float, name='Factor')
+
+    # 3. 初始化存储
+    factors = pd.Series(index=fund_pool, dtype=float, name='Factor')
+
+    # 4. 计算全样本相关系数矩阵
+    corr_matrix = returns_df.corr()
+
+    # 5. 对每只基金计算因子
+    for target_fund in fund_pool:
+        try:
+            # 跳过无数据的基金
+            if target_fund not in returns_df.columns:
+                factors[target_fund] = np.nan
+                continue
+
+            # 获取目标基金收益率
+            y = returns_df[target_fund].dropna()
+
+            # 筛选Top20相关基金（排除自身）
+            other_funds = [f for f in fund_pool if f != target_fund and f in returns_df.columns]
+            if not other_funds:
+                factors[target_fund] = np.nan
+                continue
+
+            # 获取相关性并筛选Top20
+            target_corr = corr_matrix.loc[target_fund, other_funds]
+            n_top = min(20, len(other_funds))
+            top_funds = target_corr.nlargest(n_top).index
+
+            # 相关性加权基准构建
+            weights = corr_matrix.loc[target_fund, top_funds]
+            weights = weights / weights.sum()  # 归一化处理
+
+            # 获取基准基金收益率并处理缺失值
+            benchmark_df = returns_df[top_funds].copy()
+            benchmark_df = benchmark_df.dropna(how='all')
+
+            if benchmark_df.empty:
+                factors[target_fund] = np.nan
+                continue
+
+            # 计算加权基准收益率
+            benchmark_returns = benchmark_df.dot(weights)
+
+            # 对齐目标基金和基准的日期
+            aligned_df = pd.DataFrame({'y': y, 'benchmark': benchmark_returns}).dropna()
+
+            # 检查数据点数量
+            if len(aligned_df) < 60:  # 至少需要60个数据点
+                factors[target_fund] = np.nan
+                continue
+
+            # 时间序列回归
+            X = sm.add_constant(aligned_df['benchmark'])  # 添加常数项
+            model = sm.OLS(aligned_df['y'], X, missing='drop').fit()
+
+            # 存储截距项alpha
+            factors[target_fund] = model.params[0]
+
+            # 输出调试信息
+            # print(f"基金 {target_fund}: 因子值={factors[target_fund]:.6f}, 样本数={len(aligned_df)}")
+
+        except Exception as e:
+            print(f"计算基金 {target_fund} 因子时出错: {str(e)}")
+            factors[target_fund] = np.nan
+
+    return factors
+
+
+def convert_to_normalized_rank(factors):
+    """
+    将因子值转换为0-1标准化排名
+    :param factors: 原始因子值Series
+    :return: 标准化排名Series (0-1范围)
+    """
+    # 创建副本避免修改原始数据
+    ranked = factors.copy()
+
+    # 分离有效值和缺失值
+    valid_values = ranked.dropna()
+    nan_mask = ranked.isna()
+
+    if not valid_values.empty:
+        # 对有效值进行排名（升序：值越大排名越高）
+        ranks = valid_values.rank(method='min')
+
+        # 将排名归一化到0-1范围
+        min_rank = ranks.min()
+        max_rank = ranks.max()
+
+        # 避免除以零
+        if max_rank > min_rank:
+            normalized = (ranks - min_rank) / (max_rank - min_rank)
+        else:
+            # 所有值相同的情况
+            normalized = pd.Series(0.5, index=valid_values.index)
+
+        # 更新有效值的排名
+        ranked[valid_values.index] = normalized
+
+    # 将缺失值设为0.5（中位数排名）
+    ranked[nan_mask] = 0.5
+
+    return ranked
 
 # -----------------------------------------
 # 因子计算模块 获取模型因子得分并缓存
@@ -212,10 +353,11 @@ def fstrat_getCC30ProductScore(
     # fund_universe.to_excel(fstrat_config.cc30_run_path+"基金池_{}.xlsx".format(date), index=None)
     # 因子计算
     product_ids = fund_universe['product_id'].unique().tolist()
-    product_indicator_info = anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
-    indicator_score = product_indicator_info.set_index('product_id').rank(pct=True, ascending=True).reset_index()   # 将因子值转化为排名，越大表现越好。
-    weekly_perf_rank_stability = MFanls.anlsMF_RankStability(product_ids, anls_start_date, date)   # 周度收益率的排名稳定性
-    product_score = pd.merge(indicator_score, weekly_perf_rank_stability, on='product_id', how='left')
+    product_indicator_info = calculate_fund_factors(product_ids, start_date=None, end_date=date)
+
+    # product_indicator_info = anlsMF_SelectedRatingIndicator(product_ids, anls_start_date, date, 'D', benchmark, rf)  # 因子底层使用日频收益计算
+    product_score = convert_to_normalized_rank(product_indicator_info)
+    product_score = product_score.to_frame('simialpha').reset_index().rename(columns = {'index':'product_id'})
     # 缓存因子打分
     start_index = path.rfind('_') + 1  # 最后一个_的下一个位置
     end_index = path.rfind('.')  # 扩展名前的点位置
@@ -629,9 +771,11 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     #                           + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
 
     ##  新JW30——000906：
-    product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
-                1 - product_score['jensen_beta']) + product_score['jensen_alpha']
-                               + product_score['employee_holding_ratio']) / 4
+    # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+    #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+    #                            + product_score['employee_holding_ratio']) / 4
+    product_score['score'] = product_score['simialpha']
+
     # -------------------
     # 生成最终名单
     # -------------------
@@ -964,10 +1108,10 @@ if __name__ == '__main__':
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,1,1)
-    ann_date = datetime.date(2024,6,30)
+    model_date = datetime.date(2025,4,1)
+    ann_date = datetime.date(2024,12,31)
     ###
-    path = '债基-输出结果/固收+基金池_2025-01-01.xlsx'
+    path = '债基-输出结果/固收+基金池_2025-04-01.xlsx'
     path1 = path[:-5]+"_L.xlsx"
     path2 = path[:-5]+"_M.xlsx"
     path3 = path[:-5]+"_HandF.xlsx"

@@ -205,27 +205,31 @@ def backtest(portfolio_df, end_date):
 
         fund_data = pd.read_sql(fund_query, dbconn)
         index_data = pd.read_sql(index_query, dbconn)
-        return pd.concat([fund_data, index_data])
+
+        # 确保索引唯一
+        fund_data.reset_index(drop=True, inplace=True)
+        index_data.reset_index(drop=True, inplace=True)
+
+        return pd.concat([fund_data, index_data], ignore_index=True)
 
     all_nav_data = fetch_nav_data()
+    all_nav_data.reset_index(drop=True, inplace=True)
 
     # 5. 主循环优化
     nav_output = pd.DataFrame()
     prev_end_nav = 1.0  # 记录前一期最后净值
-
-    # 确保end_date被正确处理
     end_date_str = end_date.strftime("%Y%m%d")
 
     for i, current_date in enumerate(BackTestDates):
         # 5.1 获取当前持仓
-        portfolio = portfolio_df[portfolio_df['date'] == current_date]
+        portfolio = portfolio_df[portfolio_df['date'] == current_date].copy()
         start_date = current_date
 
         # 确定结束日期
         if i < len(BackTestDates) - 1:
             period_end_date = BackTestDates[i + 1]
         else:
-            period_end_date = end_date  # 对于最后一个持仓日，结束日期是end_date
+            period_end_date = end_date
 
         # 5.2 筛选当前期的净值数据
         start_str = start_date.strftime("%Y%m%d")
@@ -233,14 +237,12 @@ def backtest(portfolio_df, end_date):
 
         # 5.3 检查起始日期是否为交易日
         if start_str not in trade_days_set:
-            # 寻找下一个交易日
             next_trade_days = Trade_days_df[
                 (Trade_days_df['trade_date_str'] >= start_str) &
                 (Trade_days_df['trade_date_str'] <= end_str)
                 ]
 
             if not next_trade_days.empty:
-                # 使用下一个交易日作为替代起始日
                 adjusted_start_str = next_trade_days.iloc[0]['trade_date_str']
                 print(f"信息: 起始日期 {start_str} 不是交易日，使用下一个交易日 {adjusted_start_str} 作为替代")
                 start_str = adjusted_start_str
@@ -252,39 +254,35 @@ def backtest(portfolio_df, end_date):
         period_mask = (all_nav_data['trade_date_str'] >= start_str) & \
                       (all_nav_data['trade_date_str'] <= end_str)
         period_data = all_nav_data[period_mask].copy()
+        period_data.reset_index(drop=True, inplace=True)
 
         # 5.5 合并权重数据
+        portfolio.reset_index(drop=True, inplace=True)
         period_data = period_data.merge(
             portfolio[['product_id', 'weight']],
             on='product_id',
             how='inner'
         )
+        period_data.reset_index(drop=True, inplace=True)
 
         # 5.6 检查净值完整性
-        # 获取当前期所有交易日
         current_trade_days = Trade_days_df[
             (Trade_days_df['date'] >= pd.Timestamp(start_date)) &
             (Trade_days_df['date'] <= pd.Timestamp(period_end_date))
             ]['trade_date_str'].unique()
 
         # 5.7 处理不完整产品
-        # 计算每个产品应有的数据点数量
         expected_count = len(current_trade_days)
-        product_counts = period_data.groupby('product_id')['trade_date_str'].nunique()
-        incomplete_products = product_counts[product_counts < expected_count].index.tolist()
+        product_counts = period_data.groupby('product_id')['trade_date_str'].nunique().reset_index()
+        incomplete_products = product_counts[product_counts['trade_date_str'] < expected_count]['product_id'].tolist()
 
         if incomplete_products:
-            # 移除不完整产品
             period_data = period_data[~period_data['product_id'].isin(incomplete_products)]
-
-            # 重新分配权重
             portfolio = portfolio[~portfolio['product_id'].isin(incomplete_products)]
             total_removed_weight = portfolio.loc[portfolio['product_id'].isin(incomplete_products), 'weight'].sum()
 
             if total_removed_weight > 0 and len(portfolio) > 0:
-                # 将移除的权重平均分配到剩余产品
                 portfolio['weight'] += total_removed_weight / len(portfolio)
-                # 更新权重数据
                 period_data = period_data.merge(
                     portfolio[['product_id', 'weight']],
                     on='product_id',
@@ -294,32 +292,29 @@ def backtest(portfolio_df, end_date):
                 period_data['weight'] = period_data['weight_new']
                 period_data.drop(columns=['weight_new'], inplace=True)
 
-        # 5.8 净值归一化
-        # 获取起始日期的净值作为基准
+        period_data.reset_index(drop=True, inplace=True)
+
+        # 5.8 净值归一化 - 修复索引问题
+        # 获取起始日期的净值作为基准，确保每个产品只有一条记录
         start_navs = period_data[period_data['trade_date_str'] == start_str]
 
-        # 如果起始日没有数据，尝试使用下一个交易日
         if start_navs.empty:
-            # 寻找下一个有数据的交易日
             available_dates = period_data['trade_date_str'].unique()
             if len(available_dates) > 0:
-                # 将日期排序并找到第一个大于等于起始日的日期
                 available_dates_sorted = sorted(available_dates)
                 for date_str in available_dates_sorted:
                     if date_str >= start_str:
                         alternative_start_date = date_str
                         break
                 else:
-                    # 如果没有找到大于等于起始日的日期，使用最后一个日期
                     alternative_start_date = available_dates_sorted[-1]
 
                 print(f"信息: 在起始日期 {start_str} 没有净值数据，使用替代日期 {alternative_start_date} 作为基准")
-
-                # 获取替代日期的净值作为基准
                 start_navs = period_data[period_data['trade_date_str'] == alternative_start_date]
 
                 if not start_navs.empty:
-                    start_navs = start_navs.set_index('product_id')['nav']
+                    # 确保每个产品只有一条记录
+                    start_navs = start_navs.drop_duplicates('product_id').set_index('product_id')['nav']
                 else:
                     print(f"警告: 在替代日期 {alternative_start_date} 也没有净值数据，跳过该期")
                     continue
@@ -327,79 +322,71 @@ def backtest(portfolio_df, end_date):
                 print(f"警告: 在日期范围 {start_str} 到 {end_str} 没有可用净值数据，跳过该期")
                 continue
         else:
-            start_navs = start_navs.set_index('product_id')['nav']
+            # 确保每个产品只有一条记录
+            start_navs = start_navs.drop_duplicates('product_id').set_index('product_id')['nav']
 
-        # 使用映射进行向量化操作
-        period_data['normalized_nav'] = period_data['product_id'].map(start_navs)
+        # 创建基准净值映射，确保索引唯一
+        nav_base = start_navs
+
+        # 使用更安全的合并方法替代map
+        period_data = period_data.merge(
+            nav_base.reset_index().rename(columns={'nav': 'base_nav'}),
+            on='product_id',
+            how='left'
+        )
+
         # 避免除以零错误
-        period_data['normalized_nav'] = period_data['nav'] / period_data['normalized_nav'].replace(0, np.nan)
+        period_data['normalized_nav'] = period_data['nav'] / period_data['base_nav'].replace(0, np.nan)
 
         # 5.9 计算资产价值
         period_data['asset_value'] = period_data['normalized_nav'] * period_data['weight']
-        daily_nav = period_data.groupby('trade_date_str')['asset_value'].sum().reset_index()
+        daily_nav = period_data.groupby('trade_date_str', as_index=False)['asset_value'].sum()
         daily_nav = daily_nav.rename(columns={'trade_date_str': 'trade_date'})
+        daily_nav.reset_index(drop=True, inplace=True)
 
-        # 检查是否有数据
         if daily_nav.empty:
             print(f"警告: 在日期 {start_date} 到 {period_end_date} 期间没有净值数据，跳过该期")
             continue
 
-        # 6.0 连接净值曲线 - 添加除以零保护
+        # 6.0 连接净值曲线
         start_value = daily_nav['asset_value'].iloc[0]
-        if abs(start_value) < 1e-8:  # 避免浮点精度问题
+        if abs(start_value) < 1e-8:
             print(f"警告: 起始资产价值接近零 ({start_value:.6f})，跳过该期: {start_date} 到 {period_end_date}")
             continue
 
         if nav_output.empty:
             daily_nav['asset_value'] /= start_value
-            nav_output = daily_nav[['trade_date', 'asset_value']]
+            nav_output = daily_nav[['trade_date', 'asset_value']].copy()
+            nav_output.reset_index(drop=True, inplace=True)
         else:
-            # 对于所有期，排除起始日以避免重复
-            # 因为起始日已经在前一期的末尾被包含过了
-            daily_nav['asset_value'] = daily_nav['asset_value'] / start_value * prev_end_nav
-
-            # 排除起始日（第一行）
+            # 排除起始日以避免重复
             if len(daily_nav) > 1:
-                nav_output = pd.concat([nav_output, daily_nav.iloc[1:]], ignore_index=True)
-            else:
-                # 如果只有一天数据，直接添加
-                nav_output = pd.concat([nav_output, daily_nav], ignore_index=True)
+                daily_nav = daily_nav.iloc[1:]
+
+            daily_nav['asset_value'] = daily_nav['asset_value'] / start_value * prev_end_nav
+            nav_output = pd.concat([nav_output, daily_nav], ignore_index=True)
 
         prev_end_nav = nav_output['asset_value'].iloc[-1]
 
     # 7. 确保包含到end_date的数据
-    # 检查最后一天是否是end_date，如果不是，添加缺失的数据
     if not nav_output.empty:
-        last_trade_date = nav_output['trade_date'].iloc[-1]
+        last_trade_date = nav_output['trade_date'].iloc[-1] if len(nav_output) > 0 else None
         if last_trade_date != end_date_str:
-            # 获取end_date的数据
-            end_date_data = all_nav_data[all_nav_data['trade_date_str'] == end_date_str]
+            end_date_data = all_nav_data[all_nav_data['trade_date_str'] == end_date_str].copy()
 
             if not end_date_data.empty:
-                # 使用最后一个持仓日的权重
-                last_portfolio_date = BackTestDates[-1]
-                last_portfolio = portfolio_df[portfolio_df['date'] == last_portfolio_date]
-
-                # 合并权重
+                last_portfolio = portfolio_df[portfolio_df['date'] == BackTestDates[-1]]
                 end_date_data = end_date_data.merge(
                     last_portfolio[['product_id', 'weight']],
                     on='product_id',
                     how='inner'
                 )
 
-                # 归一化（使用最后一个有效的起始净值）
-                # 这里需要根据实际情况调整归一化逻辑
-                # 简化处理：直接使用原始净值
+                # 使用最后一天的净值计算
                 end_date_data['asset_value'] = end_date_data['nav'] * end_date_data['weight']
-
-                # 计算当天的组合价值
                 daily_value = end_date_data['asset_value'].sum()
 
                 # 添加到输出
-                # 计算相对于前一天的变动
-                prev_value = nav_output['asset_value'].iloc[-1]
-
-                # 添加新行
                 new_row = pd.DataFrame({
                     'trade_date': [end_date_str],
                     'asset_value': [daily_value]
@@ -408,19 +395,19 @@ def backtest(portfolio_df, end_date):
 
     # 8. 过滤异常波动
     if not nav_output.empty:
-        # 添加除以零保护
+        nav_output.reset_index(drop=True, inplace=True)
         nav_output['pct_change'] = nav_output['asset_value'].pct_change().abs().fillna(0)
         nav_output = nav_output[nav_output['pct_change'] <= 0.15]
         nav_output.drop(columns=['pct_change'], inplace=True)
+        nav_output.reset_index(drop=True, inplace=True)
 
     # 9. 结果可视化
     if not nav_output.empty:
-        # 确保日期排序正确
+        # 确保日期唯一
+        nav_output = nav_output.drop_duplicates(subset='trade_date', keep='last')
         nav_output['trade_date_dt'] = pd.to_datetime(nav_output['trade_date'], format='%Y%m%d')
         nav_output = nav_output.sort_values('trade_date_dt')
-
-        # 去重：保留每个日期的最后一条记录
-        nav_output = nav_output.drop_duplicates(subset='trade_date', keep='last')
+        nav_output.reset_index(drop=True, inplace=True)
 
         plt.figure(figsize=(12, 6))
         plt.plot(nav_output['trade_date_dt'], nav_output['asset_value'], label='portfolio')
