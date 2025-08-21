@@ -3,7 +3,7 @@
 # ------------------------------------------------------
 import re
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import pandas as pd
 import datetime
 from dateutil.relativedelta import relativedelta
@@ -11,6 +11,8 @@ import src.const as const
 import src.utils.Calculation as cal
 import math as math
 import streamlit as st
+
+# from Optimization import dbconn
 from src.data.custMF import custMF_getMFIndustryClassification
 
 # ------------------------------------------------------
@@ -2416,3 +2418,143 @@ def wind_getWarehouseTotal(
                                                how='inner')
 
         return currentWarehouseTotal
+
+
+# 万能净值读取函数
+def get_asset_price(asset_code, start_date, end_date):
+    """
+    从WDS数据库读取各类资产的净值/收盘价
+    参数:
+        asset_code: 资产代码 (如 '600519.SH', 'IC.CFE', 'NDX.GI', '000001.SH')
+        start_date: 起始日期 (格式: 'YYYY-MM-DD')
+        end_date: 截止日期 (格式: 'YYYY-MM-DD')
+    返回:
+        DataFrame 包含日期和价格两列
+    """
+    # 转换日期格式
+    start = start_date.replace('-', '')
+    end = end_date.replace('-', '')
+
+    # 尝试的数据源配置（按优先级排序）
+    data_sources = [
+        # 1. 尝试香港指数收盘价
+        {
+            'table': 'HKIndexEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 2. 尝试全球指数收盘价
+        {
+            'table': 'GlobalIndexEOD',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 3. 尝试A股指数收盘价 (新增)
+        {
+            'table': 'AIndexEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 4. 尝试基金净值
+        {
+            'table': 'ChinaMutualFundNAV',
+            'price_field': 'F_NAV_ADJUSTED',
+            'asset_field': 'F_INFO_WINDCODE',
+            'date_field': 'PRICE_DATE'
+        },
+        # 5. 尝试A股股票收盘价
+        {
+            'table': 'AShareEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 6. 尝试债券收盘价
+        {
+            'table': 'CBondEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 1. 尝试期货结算价
+        {
+            'table': 'CIndexFuturesEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 1. 尝试期货结算价
+        {
+            'table': 'CBondFuturesEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 1. 尝试期货结算价
+        {
+            'table': 'CGoldSpotEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 1. 尝试期货结算价
+        {
+            'table': 'CSilverSpotEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
+        # 1. 尝试期货结算价
+        {
+            'table': 'CCommodityFuturesEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        }
+    ]
+
+    # 连接数据库
+    engine = wind_connectWindDB()
+
+    # 遍历所有数据源，直到找到有数据的结果
+    for source in data_sources:
+        try:
+            # 构建SQL查询
+            sql = text(f"""
+            SELECT {source['date_field']} AS trade_date, 
+                   {source['price_field']} AS price
+            FROM {source['table']}
+            WHERE {source['asset_field']} = :asset_code
+            AND {source['date_field']} BETWEEN :start_date AND :end_date
+            ORDER BY {source['date_field']}
+            """)
+
+            # 执行查询
+            with engine.connect() as conn:
+                df = pd.read_sql(sql, conn, params={
+                    'asset_code': asset_code,
+                    'start_date': start,
+                    'end_date': end
+                })
+
+            # 如果查询到数据则返回
+            if not df.empty:
+                # 尝试多种日期格式转换
+                try:
+                    df['trade_date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d')
+                except:
+                    try:
+                        df['trade_date'] = pd.to_datetime(df['trade_date'], format='%Y-%m-%d')
+                    except:
+                        df['trade_date'] = pd.to_datetime(df['trade_date'])
+                return df
+
+        except Exception as e:
+            # 表不存在或字段错误则尝试下一个数据源
+            continue
+
+    # 所有数据源均无数据
+    return pd.DataFrame(columns=['trade_date', 'price'])
