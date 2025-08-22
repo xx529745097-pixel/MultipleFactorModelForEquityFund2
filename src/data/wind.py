@@ -2458,6 +2458,13 @@ def get_asset_price(asset_code, start_date, end_date):
             'asset_field': 'S_INFO_WINDCODE',
             'date_field': 'TRADE_DT'
         },
+        # 3. 尝试债券指数收盘价 (新增)
+        {
+            'table': 'CBIndexEODPrices',
+            'price_field': 'S_DQ_CLOSE',
+            'asset_field': 'S_INFO_WINDCODE',
+            'date_field': 'TRADE_DT'
+        },
         # 4. 尝试基金净值
         {
             'table': 'ChinaMutualFundNAV',
