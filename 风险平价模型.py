@@ -185,7 +185,7 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 
     # 获取所有月末日期（每月最后一个交易日）
     monthly_rebalance_dates = prices.resample('M').last().index
-
+    monthly_rebalance_dates = wind.wind_getLastTradeDates(monthly_rebalance_dates)
     # 创建完整日期索引映射
     full_date_index = daily_returns.index
 
@@ -455,7 +455,7 @@ if __name__ == "__main__":
         'HSTECH.HI': 0.25,  # 港股
         'N225.GI': 0.25,  # 日股
         '003358.OF': 0.25,  # 国债
-        '000101.SH': 0.25,  # 国债
+        'CBA20901.CS': 0.25,  # 国债
         'AU.SHF': 0.25,  # 黄金
         'M.DCE':0.25,
         '159980.SZ':0.25
@@ -469,7 +469,7 @@ if __name__ == "__main__":
         'HSTECH.HI': '境外股票',  # 港股
         'N225.GI': '境外股票',  # 日股
         '003358.OF': '债券',  # 国债
-        '000101.SH': '债券',  # 国债
+        'CBA20901.CS': '债券',  # 国债
         'AU.SHF': '商品',  # 黄金
         'M.DCE': '商品',
         '159980.SZ': '商品'
