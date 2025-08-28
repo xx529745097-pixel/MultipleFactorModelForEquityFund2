@@ -2166,11 +2166,30 @@ def wind_isTradeDate(inputDate):
 # 获取一列日期的最近一个交易日日期，输入和输出都是list
 # ------------------------------------------------------
 def wind_getLastTradeDates(
-        list_of_dates      # 输入list。
+        list_of_dates,      # 输入list。
+        include = True
 ):
     calender = wind_getSSECalendar()
     df_of_dates = pd.DataFrame({'date': list_of_dates})
-    df_of_dates['trade_date'] = df_of_dates['date'].apply(lambda x: max(calender[calender['date'] < x]['date']))
+    if include:
+        df_of_dates['trade_date'] = df_of_dates['date'].apply(lambda x: max(calender[calender['date'] <= x]['date']))
+    else:
+        df_of_dates['trade_date'] = df_of_dates['date'].apply(lambda x: max(calender[calender['date'] < x]['date']))
+    return df_of_dates['trade_date'].tolist()
+
+# ------------------------------------------------------
+# 获取一列日期的最近一个交易日日期，输入和输出都是list
+# ------------------------------------------------------
+def wind_getNextTradeDates(
+        list_of_dates,      # 输入list。
+        include = False
+):
+    calender = wind_getSSECalendar()
+    df_of_dates = pd.DataFrame({'date': list_of_dates})
+    if include:
+        df_of_dates['trade_date'] = df_of_dates['date'].apply(lambda x: min(calender[calender['date'] >= x]['date']))
+    else:
+        df_of_dates['trade_date'] = df_of_dates['date'].apply(lambda x: min(calender[calender['date'] > x]['date']))
     return df_of_dates['trade_date'].tolist()
 
 # ------------------------------------------------------
@@ -2435,6 +2454,14 @@ def get_asset_price(asset_code, start_date, end_date):
     start = start_date.replace('-', '')
     end = end_date.replace('-', '')
 
+    if asset_code in ['IC.CFE', 'IF.CFE', 'IM.CFE']:
+        import src.analysis.indexFutureAnalysis as IdxFutureAnalysis
+        df = IdxFutureAnalysis.idxFutureAnls_constructStockIndexFutureContinuousContract(
+            asset_code[:2], datetime.date(int(start[:4]), int(start[4:6]), int(start[6:8])),
+                               datetime.date(int(end[:4]), int(end[4:6]), int(end[6:8])))
+        df = df[['date', 'adjusted_close']]
+        df = df.rename({'date': 'trade_date', 'adjusted_close':'price'})
+        return df
     # 尝试的数据源配置（按优先级排序）
     data_sources = [
         # 1. 尝试香港指数收盘价

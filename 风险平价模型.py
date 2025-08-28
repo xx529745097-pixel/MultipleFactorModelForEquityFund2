@@ -6,13 +6,15 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
+import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
 import src.data.wind as wind
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)  # 仅禁用 FutureWarning
 
 def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                          asset_alternatives=None, output_dir='results',
@@ -54,89 +56,94 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
     all_dates = pd.date_range(start=extended_start_date, end=end_date, freq='B')
     master_df = pd.DataFrame(index=all_dates)
 
-    # 为每个资产获取价格数据
-    for asset in assets:
-        # 确定实际使用的资产代码（考虑替代资产）
-        actual_asset = asset
-        if asset_alternatives and asset in asset_alternatives:
-            alternative = asset_alternatives[asset]
-            print(f"资产 '{asset}' 设置了替代资产: '{alternative}'")
-        else:
-            alternative = None
+    # # 为每个资产获取价格数据
+    # for asset in assets:
+    #     # 确定实际使用的资产代码（考虑替代资产）
+    #     actual_asset = asset
+    #     if asset_alternatives and asset in asset_alternatives:
+    #         alternative = asset_alternatives[asset]
+    #         print(f"资产 '{asset}' 设置了替代资产: '{alternative}'")
+    #     else:
+    #         alternative = None
+    #
+    #     # 尝试获取原始资产数据
+    #     try:
+    #         # 获取原始资产数据
+    #         df = wind.get_asset_price(asset, extended_start_date, end_date)
+    #         df = df.rename(columns={'price': asset})
+    #         df = df.set_index('trade_date')
+    #
+    #         # 检查数据是否覆盖了extended_start_date
+    #         if df.index[0] > pd.Timestamp(extended_start_date):
+    #             print(
+    #                 f"警告: 资产 '{asset}' 数据起始日期为 {df.index[0].strftime('%Y-%m-%d')}，早于要求的 {extended_start_date}")
+    #             raise Exception(f"资产 '{asset}' 数据不足")
+    #
+    #         # 检查在start_date是否有数据
+    #         if start_date not in df.index:
+    #             print(f"警告: 资产 '{asset}' 在 {start_date} 无数据")
+    #             raise Exception(f"资产 '{asset}' 在起始日期无数据")
+    #
+    #         # 记录数据来源
+    #         asset_sources[asset] = asset
+    #         print(f"资产 '{asset}' 使用原始数据")
+    #
+    #     except Exception as e:
+    #         print(f"资产 '{asset}' 原始数据获取失败: {str(e)}")
+    #
+    #         # 如果原始资产数据获取失败，尝试使用替代资产
+    #         if alternative:
+    #             try:
+    #                 print(f"尝试替代资产 '{alternative}'")
+    #
+    #                 # 获取替代资产数据
+    #                 alt_df = wind.get_asset_price(alternative, extended_start_date, end_date)
+    #                 alt_df = alt_df.rename(columns={'price': asset})  # 使用原始资产名称
+    #                 alt_df = alt_df.set_index('trade_date')
+    #
+    #                 # 检查替代资产数据是否覆盖了extended_start_date
+    #                 if alt_df.index[0] > pd.Timestamp(extended_start_date):
+    #                     print(
+    #                         f"警告: 替代资产 '{alternative}' 数据起始日期为 {alt_df.index[0].strftime('%Y-%m-%d')}，早于要求的 {extended_start_date}")
+    #                     raise Exception(f"替代资产 '{alternative}' 数据不足")
+    #
+    #                 # 检查在start_date是否有数据
+    #                 if start_date not in alt_df.index:
+    #                     print(f"警告: 替代资产 '{alternative}' 在 {start_date} 无数据")
+    #                     raise Exception(f"替代资产 '{alternative}' 在起始日期无数据")
+    #
+    #                 # 记录数据来源
+    #                 asset_sources[asset] = alternative
+    #                 print(f"资产 '{asset}' 使用替代资产 '{alternative}' 的数据")
+    #                 df = alt_df  # 使用替代资产数据
+    #
+    #             except Exception as alt_e:
+    #                 print(f"错误: 资产 '{asset}' 及其替代资产 '{alternative}' 均无法获取数据: {str(alt_e)}")
+    #                 # 如果替代资产也失败，使用随机数据作为最后手段
+    #                 np.random.seed(42)
+    #                 prices = np.exp(np.cumsum(np.random.randn(len(all_dates)) * 0.01))
+    #                 df = pd.DataFrame({asset: prices}, index=all_dates)
+    #                 asset_sources[asset] = "随机生成"
+    #                 print(f"警告: 资产 '{asset}' 使用随机生成数据")
+    #         else:
+    #             print(f"错误: 资产 '{asset}' 数据获取失败且无替代资产")
+    #             # 如果没有替代资产，使用随机数据作为最后手段
+    #             np.random.seed(42)
+    #             prices = np.exp(np.cumsum(np.random.randn(len(all_dates)) * 0.01))
+    #             df = pd.DataFrame({asset: prices}, index=all_dates)
+    #             asset_sources[asset] = "随机生成"
+    #             print(f"警告: 资产 '{asset}' 使用随机生成数据")
+    #
+    #     # 将资产数据添加到主数据框
+    #     master_df = master_df.join(df, how='left')
 
-        # 尝试获取原始资产数据
-        try:
-            # 获取原始资产数据
-            df = wind.get_asset_price(asset, extended_start_date, end_date)
-            df = df.rename(columns={'price': asset})
-            df = df.set_index('trade_date')
-
-            # 检查数据是否覆盖了extended_start_date
-            if df.index[0] > pd.Timestamp(extended_start_date):
-                print(
-                    f"警告: 资产 '{asset}' 数据起始日期为 {df.index[0].strftime('%Y-%m-%d')}，早于要求的 {extended_start_date}")
-                raise Exception(f"资产 '{asset}' 数据不足")
-
-            # 检查在start_date是否有数据
-            if start_date not in df.index:
-                print(f"警告: 资产 '{asset}' 在 {start_date} 无数据")
-                raise Exception(f"资产 '{asset}' 在起始日期无数据")
-
-            # 记录数据来源
-            asset_sources[asset] = asset
-            print(f"资产 '{asset}' 使用原始数据")
-
-        except Exception as e:
-            print(f"资产 '{asset}' 原始数据获取失败: {str(e)}")
-
-            # 如果原始资产数据获取失败，尝试使用替代资产
-            if alternative:
-                try:
-                    print(f"尝试替代资产 '{alternative}'")
-
-                    # 获取替代资产数据
-                    alt_df = wind.get_asset_price(alternative, extended_start_date, end_date)
-                    alt_df = alt_df.rename(columns={'price': asset})  # 使用原始资产名称
-                    alt_df = alt_df.set_index('trade_date')
-
-                    # 检查替代资产数据是否覆盖了extended_start_date
-                    if alt_df.index[0] > pd.Timestamp(extended_start_date):
-                        print(
-                            f"警告: 替代资产 '{alternative}' 数据起始日期为 {alt_df.index[0].strftime('%Y-%m-%d')}，早于要求的 {extended_start_date}")
-                        raise Exception(f"替代资产 '{alternative}' 数据不足")
-
-                    # 检查在start_date是否有数据
-                    if start_date not in alt_df.index:
-                        print(f"警告: 替代资产 '{alternative}' 在 {start_date} 无数据")
-                        raise Exception(f"替代资产 '{alternative}' 在起始日期无数据")
-
-                    # 记录数据来源
-                    asset_sources[asset] = alternative
-                    print(f"资产 '{asset}' 使用替代资产 '{alternative}' 的数据")
-                    df = alt_df  # 使用替代资产数据
-
-                except Exception as alt_e:
-                    print(f"错误: 资产 '{asset}' 及其替代资产 '{alternative}' 均无法获取数据: {str(alt_e)}")
-                    # 如果替代资产也失败，使用随机数据作为最后手段
-                    np.random.seed(42)
-                    prices = np.exp(np.cumsum(np.random.randn(len(all_dates)) * 0.01))
-                    df = pd.DataFrame({asset: prices}, index=all_dates)
-                    asset_sources[asset] = "随机生成"
-                    print(f"警告: 资产 '{asset}' 使用随机生成数据")
-            else:
-                print(f"错误: 资产 '{asset}' 数据获取失败且无替代资产")
-                # 如果没有替代资产，使用随机数据作为最后手段
-                np.random.seed(42)
-                prices = np.exp(np.cumsum(np.random.randn(len(all_dates)) * 0.01))
-                df = pd.DataFrame({asset: prices}, index=all_dates)
-                asset_sources[asset] = "随机生成"
-                print(f"警告: 资产 '{asset}' 使用随机生成数据")
-
-        # 将资产数据添加到主数据框
-        master_df = master_df.join(df, how='left')
-
+    ### 直接读excel
+    master_df = pd.read_excel('prices2013.xlsx')
+    ###
     # 确保所有资产都有数据
     master_df = master_df.ffill().bfill()  # 前向填充+后向填充
+    master_df.set_index('date', inplace=True)
+    master_df = master_df[assets]
 
     # 检查回测开始日期是否有数据
     if pd.isna(master_df.loc[start_date]).any().any():
@@ -186,17 +193,22 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
     # 获取所有月末日期（每月最后一个交易日）
     monthly_rebalance_dates = prices.resample('M').last().index
     monthly_rebalance_dates = wind.wind_getLastTradeDates(monthly_rebalance_dates)
+    monthly_rebalance_dates_real = wind.wind_getNextTradeDates(monthly_rebalance_dates)
+    monthly_rebalance_dates_real = wind.wind_getNextTradeDates(monthly_rebalance_dates_real)
+
     # 创建完整日期索引映射
     full_date_index = daily_returns.index
 
     # 遍历每个交易日（仅回测期间）
     for i, date in enumerate(backtest_daily_returns.index):
-        full_i = full_date_index.get_loc(date)
+        end_date = wind.wind_getLastTradeDates([date], include=False)[0]
+        end_date = wind.wind_getLastTradeDates([end_date], include=False)[0]
+        end_date = pd.Timestamp(end_date)
+        full_i = full_date_index.get_loc(end_date)
 
         # 每月末再平衡
-        if date in monthly_rebalance_dates:
+        if date in monthly_rebalance_dates_real:
             monthly_dates.append(date)
-
             # =============================================
             # 新增：动量选择资产 (仅在每月调仓时执行)
             # =============================================
@@ -226,7 +238,8 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                     valid_assets = []
 
                     # 计算动量回看起始日期
-                    start_date_momentum = date - pd.DateOffset(months=momentum_lookback)
+
+                    start_date_momentum = end_date - pd.DateOffset(months=momentum_lookback)
                     if start_date_momentum < master_df.index[0]:
                         start_date_momentum = master_df.index[0]
                     else:
@@ -237,11 +250,11 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 
                     for asset in assets_in_class:
                         # 跳过无数据的资产
-                        if start_date_momentum not in master_df.index or date not in prices.index:
+                        if start_date_momentum not in master_df.index or end_date not in prices.index:
                             continue
 
                         price_start = master_df.loc[start_date_momentum, asset]
-                        price_end = master_df.loc[date, asset]
+                        price_end = master_df.loc[end_date, asset]
 
                         # 检查价格有效性
                         if pd.isna(price_start) or pd.isna(price_end) or price_start <= 0:
@@ -271,7 +284,8 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                             per_asset_budget = total_class_budget / len(selected_assets)
                             for asset in selected_assets:
                                 new_risk_budgets[asset] = per_asset_budget
-
+                    # if date == datetime(2022, 5, 6).date():
+                    #     print(1)
             # =============================================
             # 后续波动率控制逻辑（使用调整后的风险预算）
             # =============================================
@@ -283,11 +297,17 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 
             # 计算新权重 (使用动量调整后的风险预算)
             annual_vol = vol_window.std() * np.sqrt(252)
-            annual_vol = annual_vol.replace(0, 0.15).clip(lower=0.05, upper=0.50)
+            annual_vol = annual_vol.replace(0, 0.15).clip(lower=0.01, upper=0.50)
 
             new_weights = pd.Series(new_risk_budgets) / annual_vol
             new_weights /= new_weights.sum()  # 归一化
-
+            new_weights = new_weights.fillna(0)
+            cov_matrix = vol_window.cov()
+            weights_temp = new_weights.values.reshape(-1, 1)
+            portfolio_variance = weights_temp.T @ cov_matrix.values @ weights_temp
+            portfolio_volatility = np.sqrt(portfolio_variance)[0, 0]* np.sqrt(252)
+            if target_volatility < portfolio_volatility:
+                new_weights = new_weights/(portfolio_volatility/target_volatility)
             # ... [保持不变的波动率控制部分] ...
 
             # 更新权重
@@ -448,17 +468,18 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 if __name__ == "__main__":
     # 输入参数
     RISK_BUDGETS = {
-        'IC.CFE': 0.125,  # A股
-        'IF.CFE': 0.125,  # A股
-        'IM.CFE': 0.125,  # A股
-        'NDX.GI': 0.25,  # 美股
-        'HSTECH.HI': 0.25,  # 港股
-        'N225.GI': 0.25,  # 日股
-        '003358.OF': 0.25,  # 国债
-        'CBA20901.CS': 0.25,  # 国债
-        'AU.SHF': 0.25,  # 黄金
-        'M.DCE':0.25,
-        '159980.SZ':0.25
+        'IC.CFE': 0.0833,  # A股
+        'IF.CFE': 0.0833,  # A股
+        'IM.CFE': 0.0834,  # A股
+        'NDX.GI': 0.0833,  # 美股
+        'HSTECH.HI': 0.0833,  # 港股
+        'N225.GI': 0.0834,  # 日股
+        # '003358.OF': 0.125,  # 国债
+        'CBA05201.CS': 0.125,
+        'CBA20901.CS': 0.125,  # 国债
+        'AU.SHF': 0.0833,  # 黄金
+        'M.DCE':0.0833,
+        '159980.SZ':0.0834
     }
     # 新增：资产到大类的映射
     ASSET_CLASS_MAPPING = {
@@ -468,7 +489,8 @@ if __name__ == "__main__":
         'NDX.GI': '境外股票',  # 美股
         'HSTECH.HI': '境外股票',  # 港股
         'N225.GI': '境外股票',  # 日股
-        '003358.OF': '债券',  # 国债
+        # '003358.OF': '债券',  # 国债
+        'CBA05201.CS':'债券',
         'CBA20901.CS': '债券',  # 国债
         'AU.SHF': '商品',  # 黄金
         'M.DCE': '商品',
@@ -497,7 +519,7 @@ if __name__ == "__main__":
 
     START_DATE = '2013-12-30'
     END_DATE = '2025-8-15'
-    TARGET_VOLATILITY = 0.06  # 目标年化波动率10%
+    TARGET_VOLATILITY = 0.06  # 目标年化波动率6%
     OUTPUT_DIR = 'risk_parity_results'
     # 设置中文字体支持
     plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
