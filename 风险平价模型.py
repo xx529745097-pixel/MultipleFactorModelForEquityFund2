@@ -15,6 +15,245 @@ import os
 import src.data.wind as wind
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)  # 仅禁用 FutureWarning
+from scipy.optimize import minimize, Bounds, NonlinearConstraint
+
+import time
+
+
+def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=100000,
+                                    precision=1e-12, min_eig_thresh=1e-10,
+                                    verbose=True, method='auto'):
+    """
+    鲁棒的风险预算组合优化
+    :param cov_matrix: 协方差矩阵 (numpy数组)
+    :param risk_budget: 风险预算列表
+    :param max_iter: 最大迭代次数
+    :param precision: 优化精度要求
+    :param min_eig_thresh: 最小特征值阈值
+    :param verbose: 是否显示详细输出
+    :param method: 优化方法 ('auto', 'SLSQP', 'trust-constr')
+    :return: (最优权重, 优化结果对象)
+    """
+    # 忽略特定警告
+    warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy.optimize")
+
+    # 确保输入是numpy数组
+    cov_matrix = np.asarray(cov_matrix, dtype=np.float64)
+    n = cov_matrix.shape[0]
+
+    # 处理风险预算
+    if risk_budget is None:
+        risk_budget = np.ones(n) / n
+    else:
+        risk_budget = np.asarray(risk_budget, dtype=np.float64)
+
+    # 1. 识别需要优化的资产
+    valid_idx = risk_budget > 1e-10
+    zero_idx = ~valid_idx
+
+    if not np.any(valid_idx):
+        return np.zeros(n), None
+
+    # 2. 提取有效资产的协方差子矩阵
+    valid_cov = cov_matrix[valid_idx][:, valid_idx].copy()
+    valid_budget = risk_budget[valid_idx].copy()
+
+    # 确保协方差矩阵高度正定
+    eigenvalues = np.linalg.eigvalsh(valid_cov)
+    min_eigenvalue = np.min(eigenvalues)
+    if min_eigenvalue < min_eig_thresh:
+        regularization = (min_eig_thresh - min_eigenvalue) * np.eye(valid_cov.shape[0])
+        valid_cov += regularization
+        if verbose:
+            print(f"应用正则化: 最小特征值={min_eigenvalue:.2e}, 添加正则化项={min_eig_thresh - min_eigenvalue:.2e}")
+
+    # 归一化有效资产的风险预算
+    valid_budget /= valid_budget.sum()
+    n_valid = valid_cov.shape[0]
+
+    # 3. 定义目标函数
+    def objective(w):
+        port_var = w.T @ valid_cov @ w
+        port_var_reg = port_var + 1e-30  # 极小正则化防止除零
+        marginal_risk = valid_cov @ w
+        risk_contrib_ratio = (w * marginal_risk) / port_var_reg
+        return np.sum((risk_contrib_ratio - valid_budget) ** 2)
+
+    # 4. 设置约束条件
+    constraints = []
+    bounds = Bounds(0, 1)  # 权重在0到1之间
+
+    # 权重和为1的约束
+    constraints.append(
+        NonlinearConstraint(
+            fun=lambda w: np.sum(w),
+            lb=1.0, ub=1.0
+        )
+    )
+
+    # 5. 初始点 (使用最小方差组合)
+    inv_cov = np.linalg.pinv(valid_cov)
+    min_var_w = inv_cov.sum(axis=1) / inv_cov.sum()
+    w0 = min_var_w
+
+    # 6. 选择优化方法
+    if method == 'auto':
+        method = 'trust-constr' if n_valid > 5 else 'SLSQP'
+
+    # 7. 优化求解
+    start_time = time.time()
+
+    # 通用选项
+    options = {
+        'maxiter': max_iter,
+        'disp': verbose
+    }
+
+    # 方法特定选项
+    if method == 'SLSQP':
+        method_options = {
+            'ftol': precision,
+            'eps': 1e-10
+        }
+    elif method == 'trust-constr':
+        method_options = {
+            'xtol': precision,
+            'gtol': precision,
+            'barrier_tol': precision,
+            'verbose': 1 if verbose else 0
+        }
+    else:
+        raise ValueError(f"未知优化方法: {method}")
+
+    # 合并选项
+    options.update(method_options)
+
+    # 执行优化
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = minimize(
+            objective,
+            w0,
+            method=method,
+            bounds=bounds,
+            constraints=constraints,
+            options=options
+        )
+
+    elapsed_time = time.time() - start_time
+    if verbose:
+        status = "成功" if result.success else f"失败: {result.message}"
+        print(f"优化方法: {method}, {status}, 耗时: {elapsed_time:.3f}秒, "
+              f"迭代: {result.nit}次, 最终目标值: {result.fun:.6e}")
+
+    # 8. 构建完整权重数组
+    full_weights = np.zeros(n, dtype=np.float64)
+    full_weights[valid_idx] = result.x
+    full_weights[zero_idx] = 0
+
+    # 确保权重非负并归一化
+    full_weights = np.maximum(full_weights, 0)
+    full_weights /= full_weights.sum() + 1e-20
+
+    return full_weights, result
+
+
+def iterative_refinement(cov_matrix, risk_budget, initial_weights=None,
+                         max_cycles=5, tol=1e-12, verbose=True):
+    """
+    迭代精炼优化过程
+    :param cov_matrix: 协方差矩阵
+    :param risk_budget: 风险预算
+    :param initial_weights: 初始权重
+    :param max_cycles: 最大精炼次数
+    :param tol: 收敛容差
+    :param verbose: 是否显示输出
+    :return: 优化后的权重
+    """
+    best_weights = initial_weights if initial_weights is not None else np.ones(len(risk_budget)) / len(risk_budget)
+    best_obj = float('inf')
+
+    for cycle in range(max_cycles):
+        # 使用前一次结果作为起点
+        if cycle == 0:
+            method = 'SLSQP'
+        else:
+            method = 'trust-constr'
+        weights, result = robust_risk_budget_optimization(
+            cov_matrix,
+            risk_budget,
+            max_iter=100000,
+            precision=1e-12 / (10 ** cycle),  # 每次迭代提高精度
+            verbose=verbose,
+            method=method  # 使用最可靠的方法
+        )
+
+        # 计算当前目标函数值
+        current_obj = result.fun
+
+        if verbose:
+            print(f"精炼周期 {cycle + 1}: 目标值={current_obj:.6e}")
+
+        # 检查是否改进
+        if current_obj < best_obj:
+            best_weights = weights
+            best_obj = current_obj
+
+        # 检查收敛
+        if current_obj < tol:
+            if verbose:
+                print(f"在周期 {cycle + 1} 收敛到目标精度 {tol}")
+            break
+
+        # 如果目标值不再显著下降，停止
+        if cycle > 0 and (best_obj - current_obj) < tol * 10:
+            if verbose:
+                print(f"在周期 {cycle + 1} 停止，改进不足")
+            break
+
+    return best_weights, result.fun
+
+
+def calculate_objective(cov_matrix, weights, risk_budget):
+    """
+    计算目标函数值，兼容Pandas DataFrame和NumPy数组
+    :param cov_matrix: 协方差矩阵 (DataFrame或numpy数组)
+    :param weights: 权重向量
+    :param risk_budget: 风险预算
+    :return: 目标函数值
+    """
+    # 转换风险预算为数组
+    risk_budget = np.asarray(risk_budget)
+
+    # 识别有效资产
+    valid_idx = risk_budget > 1e-10
+
+    # 如果没有有效资产，返回0
+    if not np.any(valid_idx):
+        return 0.0
+
+    # 提取有效资产的索引
+    if hasattr(cov_matrix, 'index'):
+        # 处理DataFrame
+        valid_assets = cov_matrix.index[valid_idx]
+        valid_cov = cov_matrix.loc[valid_assets, valid_assets].values
+    else:
+        # 处理numpy数组
+        valid_cov = cov_matrix[valid_idx][:, valid_idx]
+
+    # 提取有效权重
+    valid_weights = weights[valid_idx]
+
+    # 归一化有效风险预算
+    valid_budget = risk_budget[valid_idx] / risk_budget[valid_idx].sum()
+
+    # 计算目标函数
+    port_var = valid_weights.T @ valid_cov @ valid_weights
+    port_var_reg = port_var + 1e-30
+    marginal_risk = valid_cov @ valid_weights
+    risk_contrib_ratio = (valid_weights * marginal_risk) / port_var_reg
+    return np.sum((risk_contrib_ratio - valid_budget) ** 2)
+
 
 def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                          asset_alternatives=None, output_dir='results',
@@ -292,20 +531,35 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
             lookback = 252  # 一年交易日
             start_idx = max(0, full_i - lookback)
             vol_window = daily_returns.iloc[start_idx:full_i]
+            cov_matrix = vol_window.cov()*252
+            # 直接使用协方差矩阵的索引创建风险预算列表
+            risk_budget_list = [new_risk_budgets.get(asset, 0.0) for asset in cov_matrix.index]
+            risk_budget_list = np.array(risk_budget_list)
+            risk_budget_list /= risk_budget_list.sum()
 
-            # ... [保持不变的波动率计算部分] ...
+            # print("=== 标准优化 ===")
+            # weights, result = robust_risk_budget_optimization(cov_matrix, risk_budget_list, verbose=True)
+            # obj_value = calculate_objective(cov_matrix, weights, risk_budget_list)
+            # print(f"最终目标值: {obj_value:.10e}")
+            # new_weights = weights
 
             # 计算新权重 (使用动量调整后的风险预算)
-            annual_vol = vol_window.std() * np.sqrt(252)
-            annual_vol = annual_vol.replace(0, 0.15).clip(lower=0.01, upper=0.50)
-
-            new_weights = pd.Series(new_risk_budgets) / annual_vol
-            new_weights /= new_weights.sum()  # 归一化
-            new_weights = new_weights.fillna(0)
-            cov_matrix = vol_window.cov()
+            print("\n=== 迭代精炼优化 ===")
+            new_weights_result = iterative_refinement(cov_matrix, risk_budget_list, verbose=True)
+            if new_weights_result[1] <=0.001:
+                new_weights = new_weights_result[0]
+                new_weights = pd.Series(new_weights.flatten())
+            else:
+                annual_vol = vol_window.std() * np.sqrt(252)
+                annual_vol = annual_vol.replace(0, 0.15).clip(lower=0.01, upper=0.50)
+                new_weights = pd.Series(new_risk_budgets) / annual_vol
+                new_weights /= new_weights.sum()  # 归一化
+                new_weights = new_weights.fillna(0)
+            print(new_weights)
+            new_weights.index = assets
             weights_temp = new_weights.values.reshape(-1, 1)
             portfolio_variance = weights_temp.T @ cov_matrix.values @ weights_temp
-            portfolio_volatility = np.sqrt(portfolio_variance)[0, 0]* np.sqrt(252)
+            portfolio_volatility = np.sqrt(portfolio_variance)[0, 0]
             if target_volatility < portfolio_volatility:
                 new_weights = new_weights/(portfolio_volatility/target_volatility)
             # ... [保持不变的波动率控制部分] ...
@@ -517,7 +771,7 @@ if __name__ == "__main__":
     # 动量回看期（月数）
     MOMENTUM_LOOKBACK = 12
 
-    START_DATE = '2013-12-30'
+    START_DATE = '2020-12-30'
     END_DATE = '2025-8-15'
     TARGET_VOLATILITY = 0.06  # 目标年化波动率6%
     OUTPUT_DIR = 'risk_parity_results'
