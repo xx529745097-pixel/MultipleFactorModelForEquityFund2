@@ -80,7 +80,7 @@ def fstrat_getCC30EquityMFPool(
     mf_info = wind.wind_getHistoricalProductList(as_of_date=date, include_pm_info=True)  # 获取历史初始基金，即AC份额仅考虑A份额
     # 筛选正在生效的sector type标签
     mf_info = mf_info[(mf_info['sector_start_date'] <= date) & ((mf_info['sector_end_date'] >= date) | mf_info['sector_end_date'].isna())]
-    mf_info = mf_info[mf_info['type'].isin(['普通股票型基金', '偏股混合型基金', '灵活配置型基金'])]
+    mf_info = mf_info[mf_info['type'].isin(['混合债券型二级基金'])]
     mf_info = mf_info[(mf_info['fund_open_type'] == '契约型开放式') & (mf_info['min_holding_month'].isna())]
     mf_info = mf_info[~(mf_info['product_full_name'].str.contains('定开') | mf_info['product_full_name'].str.contains('持有') | mf_info['product_full_name'].str.contains('定期'))]
     # 筛选正在任职的PM，保留任职时间大于1Y
@@ -92,11 +92,11 @@ def fstrat_getCC30EquityMFPool(
     mf_info = pd.merge(mf_info, mf_latest_aum[['product_id', 'aum']], on=['product_id'], how='left')
     mf_info = mf_info[mf_info['aum'] >= 2e8]
     # 近一年权益平均仓位大于50%
-    mf_position = wind.wind_getMFAssetAllocation(date - datetime.timedelta(days=450), date).sort_values(['product_id', 'date'])  # 默认only_a_share=True
-    mf_avg_position = mf_position.groupby(['product_id'])['product_stk_value_to_nav'].rolling(4).mean().reset_index()
-    mf_latest_avg_position = mf_avg_position.groupby(['product_id'], as_index=False).last()
-    mf_info = pd.merge(mf_info, mf_latest_avg_position[['product_id', 'product_stk_value_to_nav']], on='product_id', how='left')
-    mf_info = mf_info[mf_info['product_stk_value_to_nav'] >= 0.5]
+    # mf_position = wind.wind_getMFAssetAllocation(date - datetime.timedelta(days=450), date).sort_values(['product_id', 'date'])  # 默认only_a_share=True
+    # mf_avg_position = mf_position.groupby(['product_id'])['product_stk_value_to_nav'].rolling(4).mean().reset_index()
+    # mf_latest_avg_position = mf_avg_position.groupby(['product_id'], as_index=False).last()
+    # mf_info = pd.merge(mf_info, mf_latest_avg_position[['product_id', 'product_stk_value_to_nav']], on='product_id', how='left')
+    # mf_info = mf_info[mf_info['product_stk_value_to_nav'] >= 0.5]
     # 无申购赎回限制
     suspend_info = wind.wind_getCurrentProductSuspendInfo(date, date)
     mf_info = mf_info[~mf_info['product_id'].isin(suspend_info['product_id'])]
@@ -108,6 +108,7 @@ def fstrat_getCC30EquityMFPool(
     else:
         fund_universe = mf_info[['date', 'product_id', 'product_name', 'aum', 'pm_name']].sort_values('product_id')
     return fund_universe
+
 
 # ------------------------------------------------
 # 计算基金的jensen，选股能力(alpha)，选时能力(gamma)，Sharpe
@@ -231,7 +232,7 @@ def calculate_fund_factors(fund_pool, start_date=None, end_date=None):
 
             # 获取相关性并筛选Top20
             target_corr = corr_matrix.loc[target_fund, other_funds]
-            n_top = min(20, len(other_funds))
+            n_top = min(5, len(other_funds))
             top_funds = target_corr.nlargest(n_top).index
 
             # 相关性加权基准构建
@@ -362,7 +363,7 @@ def fstrat_getCC30ProductScore(
     start_index = path.rfind('_') + 1  # 最后一个_的下一个位置
     end_index = path.rfind('.')  # 扩展名前的点位置
     cate = path[start_index:end_index]
-    product_score.to_excel("债基-输出结果/固收+因子打分_{0}_{1}.xlsx".format(date,cate), index=None)
+    # product_score.to_excel("债基-输出结果/回测数据/固收+因子打分_{0}.xlsx".format(date), index=None)
     return product_score
 
 # -----------------------------------------
@@ -753,7 +754,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     end_index = fund_universe_path.rfind('.')  # 扩展名前的点位置
     cate = fund_universe_path[start_index:end_index]
 
-    current_fund_score_path = '债基-输出结果/'+"固收+因子打分_{0}_{1}.xlsx".format(date,cate)
+    current_fund_score_path = '债基-输出结果/回测数据/'+"固收+因子打分_{0}_{1}.xlsx".format(date,cate)
     assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"  # 需要取到当期的打分结果
     product_score = pd.read_excel(current_fund_score_path)
 
@@ -962,7 +963,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
     # 输出因子打分结果
     product_score_with_info_output = pd.merge(product_score_with_info, product_score, on = 'product_id', how = 'left')
-    product_score_with_info_output.to_excel('债基-输出结果/'+"固收+基金打分结果_{0}_{1}.xlsx".format(date,cate))
+    product_score_with_info_output.to_excel('债基-输出结果/回测数据/'+"固收+基金打分结果_{0}_{1}.xlsx".format(date,cate))
     #
     # # 优化组合
     # optimized_results = optimize_portfolio(
@@ -1097,7 +1098,7 @@ def fstrat_getCC30ModelBackTestReturnSeries(
         single_period_port_ret_series = bt.backtest_calPortfolioReturnSeries(single_period_ret_pivot, single_period_shortlist_res_pivot)
         port_ret_series_list.append(single_period_port_ret_series)
     port_ret_series = pd.concat(port_ret_series_list, axis=0)
-    port_ret_series.to_frame().to_excel(f'./收益回测序列{port_ret_series.index.min()}_{port_ret_series.index.max()}.xlsx')
+    port_ret_series.to_frame().to_excel(f'./债基-输出结果/回测净值/收益回测序列{port_ret_series.index.min()}_{port_ret_series.index.max()}.xlsx')
 
 
 if __name__ == '__main__':
@@ -1108,44 +1109,133 @@ if __name__ == '__main__':
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,4,1)
-    ann_date = datetime.date(2024,12,31)
-    ###
-    path = '债基-输出结果/固收+基金池_2025-04-01.xlsx'
-    path1 = path[:-5]+"_L.xlsx"
-    path2 = path[:-5]+"_M.xlsx"
-    path3 = path[:-5]+"_HandF.xlsx"
-    # 拆分固收+类别
-    bond_plus_df = pd.read_excel(path)
-    bond_plus_df[bond_plus_df['cate'] == 'L'].to_excel(path1)
-    bond_plus_df[bond_plus_df['cate'] == 'M'].to_excel(path2)
-    bond_plus_df[bond_plus_df['cate'].isin(['H', 'F'])].to_excel(path3)
+    model_date = datetime.date(2024,11,1)
+    ann_date = datetime.date(2024,6,30)
 
-    paths = [path1,path2,path3]
-    for path in paths:
-        # # cal & cache factors
-        print(model_date)
-        fstrat_getCC30ProductScore(date=model_date, path = path, model_freq=model_freq, benchmark='885007.WI', rf=0.03)
+    # # ###    ### 生成二级债基基金池
+    dates = [datetime.date(2016,1,29),datetime.date(2016,4,29),datetime.date(2016,7,29),datetime.date(2016,10,31),
+             datetime.date(2017,1,26),datetime.date(2017,4,28),datetime.date(2017,7,28),datetime.date(2017,10,31),
+             datetime.date(2018,1,31),datetime.date(2018,4,27),datetime.date(2018,7,31),datetime.date(2018,10,31),
+             datetime.date(2019,1,31),datetime.date(2019,4,30),datetime.date(2019,7,31),datetime.date(2019,10,31),
+             datetime.date(2020,1,23),datetime.date(2020,4,30),datetime.date(2020,7,31),datetime.date(2020,10,30),
+             datetime.date(2021,1,29),datetime.date(2021,4,30),datetime.date(2021,7,30),datetime.date(2021,10,29),
+             datetime.date(2022,1,28),datetime.date(2022,4,29),datetime.date(2022,7,29),datetime.date(2022,10,31),
+             datetime.date(2023,1,31),datetime.date(2023,4,28),datetime.date(2023,7,31),datetime.date(2023,10,31),
+             datetime.date(2024,1,31),datetime.date(2024,4,30),datetime.date(2024,7,31),datetime.date(2024,10,31),
+             datetime.date(2025,1,27),datetime.date(2025,4,30)]
+    portfolio_top20pct = pd.DataFrame(columns = ['product_id', 'weight', 'date'])
+    portfolio_bottom20pct = pd.DataFrame(columns = ['product_id', 'weight', 'date'])
+    for date1 in dates:
+        path = '债基-输出结果/固收+基金池_{}.xlsx'.format(date1.strftime('%Y-%m-%d'))
+        df_bondplus = fstrat_getCC30EquityMFPool(date1)
+        #### df_bondplus = df_bondplus.drop('pm_name', axis=1)
+        #### df_bondplus = df_bondplus.drop_duplicates()
+        df_bondplus.to_excel(path)
+        ### cal & cache factors
 
-        # shortlist & cache final 30-products res from cached files
+        # print(date1)
+        # factor_df = fstrat_getCC30ProductScore(date=date1, path = path, model_freq=model_freq, benchmark='885007.WI', rf=0.03)
+        # factor_df = factor_df.sort_values(by = 'simialpha', ascending = False).reset_index(drop = True)
+        # ptfl_size = len(factor_df)//5
+        # top20pct = factor_df[:ptfl_size]
+        # bottom20pct = factor_df[-ptfl_size:]
+        # top20pct['date'] = date1
+        # bottom20pct['date'] = date1
+        # top20pct['weight'] = 1/ptfl_size
+        # bottom20pct['weight'] = 1/ptfl_size
+        # top20pct = top20pct[['product_id', 'weight', 'date']]
+        # bottom20pct = bottom20pct[['product_id', 'weight', 'date']]
+        # portfolio_top20pct = pd.concat([portfolio_top20pct,top20pct])
+        # portfolio_bottom20pct = pd.concat([portfolio_bottom20pct,bottom20pct])
 
-        stock_barra = pd.read_csv('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/stock_barra.csv')
-        index_barra = pd.read_excel('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/zz800_barra.xlsx')
+    # portfolio_top20pct.to_excel('债基-输出结果/回测数据/固收+基金top组合.xlsx')
+    # portfolio_bottom20pct.to_excel('债基-输出结果/回测数据/固收+基金bottom组合.xlsx')
 
-        # 步骤1：将字符串转换为pandas的datetime类型
-        stock_barra['date'] = pd.to_datetime(stock_barra['date'])
-        # 步骤2：提取datetime.date对象（保留日期部分）
-        stock_barra['date'] = stock_barra['date'].dt.date
-        # 步骤1：将字符串转换为pandas的datetime类型
-        index_barra['date'] = pd.to_datetime(index_barra['date'])
-        # 步骤2：提取datetime.date对象（保留日期部分）
-        index_barra['date'] = index_barra['date'].dt.date
 
-        # 基金选择
-        print(model_date)
-        fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, path,model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                     original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885008.WI', index_delay=1,
-                                                                     stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
+    # model_start_date = datetime.date(2016,2,1)
+    #
+    # # back-test model from cached files
+    # fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date,
+    #                                             path = fstrat_config.cc30_shortlist_res_path_backtest1, model_freq=model_freq)
+
+    #### 若需分类：
+    # path = '债基-输出结果/固收+基金池_20241101_聚类.xlsx'
+    # path1 = path[:-5]+"_防御.xlsx"
+    # path2 = path[:-5]+"_均衡.xlsx"
+    # path3 = path[:-5]+"_进攻.xlsx"
+    # # 拆分固收+类别
+    # bond_plus_df = pd.read_excel(path)
+    # bond_plus_df[bond_plus_df['cate'] == '防御'].to_excel(path1)
+    # bond_plus_df[bond_plus_df['cate'] == '均衡'].to_excel(path2)
+    # bond_plus_df[bond_plus_df['cate'] == '进攻'].to_excel(path3)
+    #
+    # paths = [path1,path2,path3]
+    # for path in paths:
+    #     # # cal & cache factors
+    #     print(model_date)
+    #     fstrat_getCC30ProductScore(date=model_date, path = path, model_freq=model_freq, benchmark='885007.WI', rf=0.03)
+    #
+    #     # shortlist & cache final 30-products res from cached files
+    #
+    #     stock_barra = pd.read_csv('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/stock_barra.csv')
+    #     index_barra = pd.read_excel('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/zz800_barra.xlsx')
+    #
+    #     # 步骤1：将字符串转换为pandas的datetime类型
+    #     stock_barra['date'] = pd.to_datetime(stock_barra['date'])
+    #     # 步骤2：提取datetime.date对象（保留日期部分）
+    #     stock_barra['date'] = stock_barra['date'].dt.date
+    #     # 步骤1：将字符串转换为pandas的datetime类型
+    #     index_barra['date'] = pd.to_datetime(index_barra['date'])
+    #     # 步骤2：提取datetime.date对象（保留日期部分）
+    #     index_barra['date'] = index_barra['date'].dt.date
+    #
+    #     # 基金选择
+    #     print(model_date)
+    #     fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, path,model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+    #                                                                  original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885008.WI', index_delay=1,
+    #                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
+    #     model_start_date = datetime.date(2022,10,31)
+    #
+    #     # back-test model from cached files
+    #     fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date,
+    #                                             path = fstrat_config.cc30_shortlist_res_path_backtest1, model_freq=model_freq)
+
+
+    # path = '债基-输出结果/固收+基金池_2025-04-01.xlsx'
+    # path1 = path[:-5]+"_L.xlsx"
+    # path2 = path[:-5]+"_M.xlsx"
+    # path3 = path[:-5]+"_HandF.xlsx"
+    # # 拆分固收+类别
+    # bond_plus_df = pd.read_excel(path)
+    # bond_plus_df[bond_plus_df['cate'] == 'L'].to_excel(path1)
+    # bond_plus_df[bond_plus_df['cate'] == 'M'].to_excel(path2)
+    # bond_plus_df[bond_plus_df['cate'].isin(['H', 'F'])].to_excel(path3)
+    #
+    # paths = [path1,path2,path3]
+    # for path in paths:
+    #     # # cal & cache factors
+    #     print(model_date)
+    #     fstrat_getCC30ProductScore(date=model_date, path = path, model_freq=model_freq, benchmark='885007.WI', rf=0.03)
+    #
+    #     # shortlist & cache final 30-products res from cached files
+    #
+    #     stock_barra = pd.read_csv('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/stock_barra.csv')
+    #     index_barra = pd.read_excel('C:/Users/041685/Desktop/多因子code2/CC30优化_baseline/CC30优化/model_res/zz800_barra.xlsx')
+    #
+    #     # 步骤1：将字符串转换为pandas的datetime类型
+    #     stock_barra['date'] = pd.to_datetime(stock_barra['date'])
+    #     # 步骤2：提取datetime.date对象（保留日期部分）
+    #     stock_barra['date'] = stock_barra['date'].dt.date
+    #     # 步骤1：将字符串转换为pandas的datetime类型
+    #     index_barra['date'] = pd.to_datetime(index_barra['date'])
+    #     # 步骤2：提取datetime.date对象（保留日期部分）
+    #     index_barra['date'] = index_barra['date'].dt.date
+    #
+    #     # 基金选择
+    #     print(model_date)
+    #     fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, path,model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+    #                                                                  original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885008.WI', index_delay=1,
+    #                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
         # model_start_date = datetime.date(2022,10,31)
 
         # back-test model from cached files

@@ -409,52 +409,63 @@ def backtest(portfolio_df, end_date):
         nav_output = nav_output.sort_values('trade_date_dt')
         nav_output.reset_index(drop=True, inplace=True)
 
-        plt.figure(figsize=(12, 6))
-        plt.plot(nav_output['trade_date_dt'], nav_output['asset_value'], label='portfolio')
-        plt.legend()
-        plt.title('portfolio backtest')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.show()
+        # plt.figure(figsize=(12, 6))
+        # plt.plot(nav_output['trade_date_dt'], nav_output['asset_value'], label='portfolio')
+        # plt.legend()
+        # plt.title('portfolio backtest')
+        # plt.xticks(rotation=45)
+        # plt.tight_layout()
+        # plt.show()
 
     return nav_output[['trade_date', 'asset_value']] if not nav_output.empty else pd.DataFrame()
 
-Class = 'HandF'
-df1 = pd.read_excel('债基-输出结果/固收+基金打分结果_2024-07-01_{}.xlsx'.format(Class))
-df2 = pd.read_excel('债基-输出结果/固收+基金打分结果_2024-10-01_{}.xlsx'.format(Class))
-df3 = pd.read_excel('债基-输出结果/固收+基金打分结果_2025-01-01_{}.xlsx'.format(Class))
-df4 = pd.read_excel('债基-输出结果/固收+基金打分结果_2025-04-01_{}.xlsx'.format(Class))
-df1 = df1.sort_values('score_x')
-df2 = df2.sort_values('score_x')
-df3 = df3.sort_values('score_x')
-df4 = df4.sort_values('score_x')
 
-## top20%
-df1_top = df1[:len(df1)//5][['date','product_id','product_name']]
-df1_top['weight'] = 1/len(df1_top)
-df2_top = df2[:len(df2)//5][['date','product_id','product_name']]
-df2_top['weight'] = 1/len(df2_top)
-df3_top = df3[:len(df3)//5][['date','product_id','product_name']]
-df3_top['weight'] = 1/len(df3_top)
-df4_top = df4[:len(df4)//5][['date','product_id','product_name']]
-df4_top['weight'] = 1/len(df4_top)
-df_top = pd.concat([df1_top, df2_top, df3_top, df4_top]).reset_index(drop = True)
-df_top['class'] = 1
-## bottom20%
-df1_bottom = df1[-len(df1)//5:][['date','product_id','product_name']]
-df1_bottom['weight'] = 1/len(df1_bottom)
-df2_bottom = df2[-len(df2)//5:][['date','product_id','product_name']]
-df2_bottom['weight'] = 1/len(df2_bottom)
-df3_bottom = df3[-len(df3)//5:][['date','product_id','product_name']]
-df3_bottom['weight'] = 1/len(df3_bottom)
-df4_bottom = df4[-len(df4)//5:][['date','product_id','product_name']]
-df4_bottom['weight'] = 1/len(df4_bottom)
-df_bottom = pd.concat([df1_bottom, df2_bottom, df3_bottom, df4_bottom]).reset_index(drop = True)
-df_bottom['class'] = 1
+# Class = '进攻'
+# df1 = pd.read_excel('债基-输出结果/回测数据/固收+基金打分结果_2024-08-01_{}.xlsx'.format(Class))
+# df2 = pd.read_excel('债基-输出结果/回测数据/固收+基金打分结果_2024-11-01_{}.xlsx'.format(Class))
+# df3 = pd.read_excel('债基-输出结果/回测数据/固收+基金打分结果_2025-02-01_{}.xlsx'.format(Class))
+# df4 = pd.read_excel('债基-输出结果/回测数据/固收+基金打分结果_2025-05-01_{}.xlsx'.format(Class))
+# df1 = df1.sort_values('score_x')
+# df2 = df2.sort_values('score_x')
+# df3 = df3.sort_values('score_x')
+# df4 = df4.sort_values('score_x')
+#
+# ## top20%
+# df1_top = df1[:len(df1)//5][['date','product_id','product_name']]
+# df1_top['weight'] = 1/len(df1_top)
+# df2_top = df2[:len(df2)//5][['date','product_id','product_name']]
+# df2_top['weight'] = 1/len(df2_top)
+# df3_top = df3[:len(df3)//5][['date','product_id','product_name']]
+# df3_top['weight'] = 1/len(df3_top)
+# df4_top = df4[:len(df4)//5][['date','product_id','product_name']]
+# df4_top['weight'] = 1/len(df4_top)
+# df_top = pd.concat([df1_top, df2_top, df3_top, df4_top]).reset_index(drop = True)
+# df_top['class'] = 1
+# ## bottom20%
+# df1_bottom = df1[-len(df1)//5:][['date','product_id','product_name']]
+# df1_bottom['weight'] = 1/len(df1_bottom)
+# df2_bottom = df2[-len(df2)//5:][['date','product_id','product_name']]
+# df2_bottom['weight'] = 1/len(df2_bottom)
+# df3_bottom = df3[-len(df3)//5:][['date','product_id','product_name']]
+# df3_bottom['weight'] = 1/len(df3_bottom)
+# df4_bottom = df4[-len(df4)//5:][['date','product_id','product_name']]
+# df4_bottom['weight'] = 1/len(df4_bottom)
+# df_bottom = pd.concat([df1_bottom, df2_bottom, df3_bottom, df4_bottom]).reset_index(drop = True)
+# df_bottom['class'] = 1
+#
+# df_top['product_id'] = otc_to_inside(df_top['product_id'])
+# df_bottom['product_id'] = otc_to_inside(df_bottom['product_id'])
+# nav_df1 = backtest(df_top, datetime.date(2025,8, 1))
+# # nav_df1.to_excel('债基-输出结果/回测结果/top20%回测-{}.xlsx'.format(Class))
+# nav_df2 = backtest(df_bottom, datetime.date(2025,8, 1))
+# # nav_df2.to_excel('债基-输出结果/回测结果/bottom20%回测-{}.xlsx'.format(Class))
+# nav_df1 = nav_df1.rename(columns = {'asset_value':'top20%'})
+# nav_df2 = nav_df2.rename(columns = {'asset_value':'bottom20%'})
+# df = pd.merge(nav_df1, nav_df2, on = 'trade_date')
+# df.to_excel('债基-输出结果/回测结果/{}.xlsx'.format(Class))
 
-df_top['product_id'] = otc_to_inside(df_top['product_id'])
-df_bottom['product_id'] = otc_to_inside(df_bottom['product_id'])
-nav_df1 = backtest(df_top, datetime.date(2025,7, 1))
-nav_df1.to_excel('债基-输出结果/top20%回测-{}.xlsx'.format(Class))
-nav_df2 = backtest(df_bottom, datetime.date(2025,7, 1))
-nav_df2.to_excel('债基-输出结果/bottom20%回测-{}.xlsx'.format(Class))
+
+ptfldf = pd.read_excel('C:/Users/041685/Desktop/多因子选基code/回测结果/回测组合_input.xlsx')
+ptfldf['product_id'] = otc_to_inside(ptfldf['product_id'])
+nav_df = backtest(ptfldf, datetime.date(2025,7, 31))
+nav_df.to_excel('C:/Users/041685/Desktop/多因子选基code/回测结果/回测组合净值结果.xlsx')
