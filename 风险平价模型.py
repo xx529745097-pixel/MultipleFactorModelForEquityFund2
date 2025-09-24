@@ -255,6 +255,102 @@ def calculate_objective(cov_matrix, weights, risk_budget):
     return np.sum((risk_contrib_ratio - valid_budget) ** 2)
 
 
+def calculate_momentum_factor(asset, end_date, master_df, factor_type):
+    """
+    计算指定资产的动量因子值
+
+    :param asset: 资产代码
+    :param end_date: 当前调仓日期
+    :param master_df: 包含所有资产历史价格的数据框
+    :param factor_type: 动量因子类型 ('1m_ret_vol', '12m_ret_vol', '12m_ret', 'price_quantile')
+    :return: 动量因子值
+    """
+    try:
+        # 确保end_date在master_df索引中
+        if end_date not in master_df.index:
+            return np.nan
+
+        # 获取end_date在master_df中的位置
+        end_idx = master_df.index.get_loc(end_date)
+
+        if factor_type == '1m_ret_vol':  # 历史一个月绝对涨跌幅/历史一个月波动率
+            # 1个月窗口（约21个交易日）
+            if end_idx < 21:
+                return np.nan
+            start_idx = end_idx - 21
+            prices = master_df.iloc[start_idx:end_idx + 1][asset]
+            abs_ret = (prices.iloc[-1] / prices.iloc[0]) - 1
+            daily_rets = prices.pct_change().dropna()
+            vol = daily_rets.std() * np.sqrt(252)  # 年化波动率
+            return abs_ret / vol if vol != 0 else np.nan
+
+        elif factor_type == '12m_ret_vol':  # 历史12个月绝对涨跌幅/历史12个月波动率
+            # 12个月窗口（约252个交易日）
+            if end_idx < 252:
+                return np.nan
+            start_idx = end_idx - 252
+            prices = master_df.iloc[start_idx:end_idx + 1][asset]
+            abs_ret = (prices.iloc[-1] / prices.iloc[0]) - 1
+            daily_rets = prices.pct_change().dropna()
+            vol = daily_rets.std() * np.sqrt(252)  # 年化波动率
+            return abs_ret / vol if vol != 0 else np.nan
+
+        elif factor_type == '12m_ret':  # 历史12个月绝对涨跌幅
+            # 12个月窗口（约252个交易日）
+            if end_idx < 252:
+                return np.nan
+            start_idx = end_idx - 252
+            prices = master_df.iloc[start_idx:end_idx + 1][asset]
+            return (prices.iloc[-1] / prices.iloc[0]) - 1
+
+        elif factor_type == 'price_quantile':  # 当前价格在过去12个月的分位水平
+            # 12个月窗口（约252个交易日）
+            if end_idx < 252:
+                return np.nan
+            start_idx = end_idx - 252
+            prices = master_df.iloc[start_idx:end_idx + 1][asset]
+            current_price = prices.iloc[-1]
+            # 计算分位水平
+            return np.mean(prices < current_price)
+
+        else:
+            raise ValueError(f"未知的动量因子类型: {factor_type}")
+
+    except Exception as e:
+        print(f"计算资产 {asset} 的 {factor_type} 因子时出错: {str(e)}")
+        return np.nan
+
+
+def calculate_composite_momentum(asset, end_date, master_df):
+    """
+    计算复合动量信号（四个因子等权组合）
+
+    :param asset: 资产代码
+    :param end_date: 当前调仓日期
+    :param master_df: 包含所有资产历史价格的数据框
+    :return: 复合动量值
+    """
+    factors = [
+        '1m_ret_vol',
+        '12m_ret_vol',
+        '12m_ret',
+        'price_quantile'
+    ]
+
+    factor_values = []
+
+    for factor in factors:
+        value = calculate_momentum_factor(asset, end_date, master_df, factor)
+        if not np.isnan(value):
+            factor_values.append(value)
+
+    # 如果所有因子都有效，返回平均值
+    if factor_values:
+        return np.mean(factor_values)
+
+    return np.nan
+
+
 def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                          asset_alternatives=None, output_dir='results',
                          momentum_lookback=12, asset_selection=None, asset_class_mapping=None):
@@ -377,7 +473,7 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
     #     master_df = master_df.join(df, how='left')
 
     ### 直接读excel
-    master_df = pd.read_excel('prices2013.xlsx')
+    master_df = pd.read_excel('prices.xlsx')
     ###
     # 确保所有资产都有数据
     master_df = master_df.ffill().bfill()  # 前向填充+后向填充
@@ -472,41 +568,20 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                     if N_i <= 0:
                         continue
 
-                    # 计算大类内资产过去T个月的收益率
-                    asset_returns = {}
+                    # 计算大类内资产的复合动量值
+                    asset_momentum = {}
                     valid_assets = []
 
-                    # 计算动量回看起始日期
-
-                    start_date_momentum = end_date - pd.DateOffset(months=momentum_lookback)
-                    if start_date_momentum < master_df.index[0]:
-                        start_date_momentum = master_df.index[0]
-                    else:
-                        # 找到第一个交易日
-                        valid_dates = master_df.index[master_df.index >= start_date_momentum]
-                        if len(valid_dates) > 0:
-                            start_date_momentum = valid_dates[0]
-
                     for asset in assets_in_class:
-                        # 跳过无数据的资产
-                        if start_date_momentum not in master_df.index or end_date not in prices.index:
-                            continue
-
-                        price_start = master_df.loc[start_date_momentum, asset]
-                        price_end = master_df.loc[end_date, asset]
-
-                        # 检查价格有效性
-                        if pd.isna(price_start) or pd.isna(price_end) or price_start <= 0:
-                            continue
-
-                        ret = (price_end / price_start) - 1
-                        asset_returns[asset] = ret
-                        valid_assets.append(asset)
+                        momentum_score = calculate_composite_momentum(asset, end_date, master_df)
+                        if not np.isnan(momentum_score):
+                            asset_momentum[asset] = momentum_score
+                            valid_assets.append(asset)
 
                     # 选择表现最好的N_i个资产
                     if valid_assets:
-                        # 按收益率降序排序
-                        sorted_assets = sorted(valid_assets, key=lambda x: asset_returns[x], reverse=True)
+                        # 按动量值降序排序
+                        sorted_assets = sorted(valid_assets, key=lambda x: asset_momentum[x], reverse=True)
                         selected_assets = sorted_assets[:min(N_i, len(sorted_assets))]
 
                         # 计算大类总风险预算
@@ -537,16 +612,15 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
             risk_budget_list = np.array(risk_budget_list)
             risk_budget_list /= risk_budget_list.sum()
 
-            # print("=== 标准优化 ===")
-            # weights, result = robust_risk_budget_optimization(cov_matrix, risk_budget_list, verbose=True)
-            # obj_value = calculate_objective(cov_matrix, weights, risk_budget_list)
-            # print(f"最终目标值: {obj_value:.10e}")
-            # new_weights = weights
+            print("=== 标准优化 ===")
+            new_weights_result = robust_risk_budget_optimization(cov_matrix, risk_budget_list, verbose=True)
+            obj_value = new_weights_result[1].fun
 
             # 计算新权重 (使用动量调整后的风险预算)
-            print("\n=== 迭代精炼优化 ===")
-            new_weights_result = iterative_refinement(cov_matrix, risk_budget_list, verbose=True)
-            if new_weights_result[1] <=0.001:
+            # print("\n=== 迭代精炼优化 ===")
+            # new_weights_result = iterative_refinement(cov_matrix, risk_budget_list, verbose=True)
+            # obj_value = new_weights_result[1]
+            if obj_value <= 0.001:
                 new_weights = new_weights_result[0]
                 new_weights = pd.Series(new_weights.flatten())
             else:
@@ -722,18 +796,18 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 if __name__ == "__main__":
     # 输入参数
     RISK_BUDGETS = {
-        # 'IC.CFE': 0.25,  # A股
-        'IF.CFE': 0.25,  # A股
-        # 'IM.CFE': 0.0834,  # A股
-        'NDX.GI': 0.25,  # 美股
-        # 'HSTECH.HI': 0.0833,  # 港股
-        # 'N225.GI': 0.0834,  # 日股
-        # '003358.OF': 0.125,  # 国债
-        'CBA05201.CS': 0.25,
+        'IC.CFE': 0.0833,  # A股
+        'IF.CFE': 0.0833,  # A股
+        'IM.CFE': 0.0834,  # A股
+        'NDX.GI': 0.0833,  # 美股
+        'HSTECH.HI': 0.0833,  # 港股
+        'N225.GI': 0.0834,  # 日股
+        '003358.OF': 0.25,  # 国债
+        # 'CBA05201.CS': 0.125,
         # 'CBA20901.CS': 0.125,  # 国债
-        'AU.SHF': 0.25,  # 黄金
-        # 'M.DCE':0.0833,
-        # '159980.SZ':0.0834
+        'AU.SHF': 0.0833,  # 黄金
+        'M.DCE':0.0833,
+        '159980.SZ':0.0834
     }
     # 新增：资产到大类的映射
     ASSET_CLASS_MAPPING = {
@@ -743,16 +817,16 @@ if __name__ == "__main__":
         'NDX.GI': '境外股票',  # 美股
         'HSTECH.HI': '境外股票',  # 港股
         'N225.GI': '境外股票',  # 日股
-        # '003358.OF': '债券',  # 国债
-        'CBA05201.CS':'债券',
-        'CBA20901.CS': '债券',  # 国债
+        '003358.OF': '债券',  # 国债
+        # 'CBA05201.CS':'债券',
+        # 'CBA20901.CS': '债券',  # 国债
         'AU.SHF': '商品',  # 黄金
         'M.DCE': '商品',
         '159980.SZ': '商品'
     }
     # 新增：每类资产选择数量
     ASSET_SELECTION = {
-        '股票': 1,  # 选择表现最好的2个股票资产
+        '股票': 2,  # 选择表现最好的2个股票资产
         '境外股票': 1,  # 选择表现最好的1个境外股票
         '债券': 1,  # 选择表现最好的1个债券
         '商品': 1  # 选择表现最好的1个商品
