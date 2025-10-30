@@ -902,7 +902,7 @@ if __name__ == "__main__":
     MOMENTUM_LOOKBACK = 12
 
     START_DATE = '2021-3-30'
-    END_DATE = '2025-8-15'
+    END_DATE = '2025-10-13'
     TARGET_VOLATILITY = 0.06  # 目标年化波动率6%
     OUTPUT_DIR = 'risk_parity_results'
     # 设置中文字体支持

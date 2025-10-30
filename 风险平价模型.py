@@ -81,15 +81,15 @@ def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=10000
 
     # 4. 设置约束条件
     constraints = []
-    bounds = Bounds(0, 1)  # 权重在0到1之间
+    bounds = Bounds(0, np.inf)  # 权重在0到1之间
 
-    # 权重和为1的约束
-    constraints.append(
-        NonlinearConstraint(
-            fun=lambda w: np.sum(w),
-            lb=1.0, ub=1.0
-        )
-    )
+    # # 权重和为1的约束
+    # constraints.append(
+    #     NonlinearConstraint(
+    #         fun=lambda w: np.sum(w),
+    #         lb=1.0, ub=1.0
+    #     )
+    # )
 
     # 5. 初始点 (使用最小方差组合)
     inv_cov = np.linalg.pinv(valid_cov)
@@ -629,14 +629,14 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
                 new_weights = pd.Series(new_risk_budgets) / annual_vol
                 new_weights /= new_weights.sum()  # 归一化
                 new_weights = new_weights.fillna(0)
-            print(new_weights)
             new_weights.index = assets
             weights_temp = new_weights.values.reshape(-1, 1)
             portfolio_variance = weights_temp.T @ cov_matrix.values @ weights_temp
             portfolio_volatility = np.sqrt(portfolio_variance)[0, 0]
-            if target_volatility < portfolio_volatility:
-                new_weights = new_weights/(portfolio_volatility/target_volatility)
+            # if target_volatility < portfolio_volatility:
+            new_weights = new_weights/(portfolio_volatility/target_volatility)
             # ... [保持不变的波动率控制部分] ...
+            print(new_weights)
 
             # 更新权重
             weights = new_weights
@@ -802,7 +802,7 @@ if __name__ == "__main__":
         'NDX.GI': 0.0833,  # 美股
         'HSTECH.HI': 0.0833,  # 港股
         'N225.GI': 0.0834,  # 日股
-        '003358.OF': 0.25,  # 国债
+        'T.CFE': 0.25,  # 国债
         # 'CBA05201.CS': 0.125,
         # 'CBA20901.CS': 0.125,  # 国债
         'AU.SHF': 0.0833,  # 黄金
@@ -817,7 +817,7 @@ if __name__ == "__main__":
         'NDX.GI': '境外股票',  # 美股
         'HSTECH.HI': '境外股票',  # 港股
         'N225.GI': '境外股票',  # 日股
-        '003358.OF': '债券',  # 国债
+        'T.CFE': '债券',  # 国债
         # 'CBA05201.CS':'债券',
         # 'CBA20901.CS': '债券',  # 国债
         'AU.SHF': '商品',  # 黄金
@@ -837,7 +837,7 @@ if __name__ == "__main__":
         'IF.CFE': '000300.SH',  # H股
         'IM.CFE': '000852.SH',
         # 'NDX.GI': 0.25,  # 美股
-        '003358.OF': 'CBA05201.CS',  # 国债
+        'T.CFE': 'CBA05201.CS',  # 国债
         # 'CBA05201.CS': 0.25,  # 国债
         # '000832.CSI': 0.125,  # 转债
         '159980.SZ': 'CU.SHF',  # 黄金
@@ -846,7 +846,7 @@ if __name__ == "__main__":
     MOMENTUM_LOOKBACK = 12
 
     START_DATE = '2020-12-30'
-    END_DATE = '2025-8-15'
+    END_DATE = '2025-10-13'
     TARGET_VOLATILITY = 0.06  # 目标年化波动率6%
     OUTPUT_DIR = 'risk_parity_results'
     # 设置中文字体支持
