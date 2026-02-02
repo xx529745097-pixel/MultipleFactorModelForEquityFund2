@@ -20,7 +20,7 @@ from src.data.custMF import custMF_getMFIndustryClassification
 # Author: Zhongheng Shen, 041439
 # ------------------------------------------------------
 def wind_connectWindDB():
-    __oracle_url = 'oracle://wangnanhao:40!VEz6QX@10.23.153.15:21010/wind'
+    __oracle_url = 'oracle://wangnanhao:40!VEz6QX@10.23.153.14:21010/wind'
     dbengine = create_engine(__oracle_url)
     dbconn = dbengine.connect()
     return dbconn
@@ -116,36 +116,35 @@ def wind_getStockIndexComponentsWeight(
 # 股东和自由流通股东并集
 # ------------------------------------------------------
 def wind_getAShareHolders(
-        stock_ids = None     # stock_ids股票代码，应为list格式，为None时，相当于获取全部股票
+    report_period_start_date,  # datetime.date, 开始报告期
+    report_period_end_date,  # datetime.date, 截止报告期
+    stock_ids=None,   # list or None, 筛选股票列表
+    float_holders=False   # 前十大股东/前十大流通股东，默认为前十大股东
 ):
     dbconn = wind_connectWindDB()
-    sql_total = "select S_INFO_WINDCODE as stock_id, REPORT_PERIOD as dt, " \
-                "S_HOLDER_ANAME as holder_name, S_HOLDER_QUANTITY as quantity " \
-                "from AShareInsideHolder " # 前十大股东
-    sql_float = "select S_INFO_WINDCODE as stock_id, REPORT_PERIOD as dt, " \
+    sql_holder = "select S_INFO_WINDCODE as stock_id, REPORT_PERIOD as dt, " \
                 "S_HOLDER_NAME as holder_name, S_HOLDER_QUANTITY as quantity " \
-                "from AShareFloatHolder " # 流通股东
-    sql_codes = "where S_INFO_WINDCODE in {} "
-    sql_2 = "order by S_INFO_WINDCODE, REPORT_PERIOD, S_HOLDER_QUANTITY desc"
+                "from %s where REPORT_PERIOD >= '{}' and REPORT_PERIOD <= '{}' " \
+                 % ('AShareFloatHolder' if float_holders else 'AShareInsideHolder')  # 前十大股东/流通股东
+    sql_codes = "and S_INFO_WINDCODE in {} "
 
-    if stock_ids == None:  # 空的时候读取全部股票
-        df_total = pd.read_sql_query(sql_total + sql_2, dbconn)
-        df_float = pd.read_sql_query(sql_float + sql_2, dbconn)
-    elif len(stock_ids) == 1:  # list长度为1时候无法使用tuple
-        df_total = pd.read_sql_query(sql_total + sql_codes.format('\'' + stock_ids[0] + '\'') + sql_2, dbconn)
-        df_float = pd.read_sql_query(sql_float + sql_codes.format('\'' + stock_ids[0] + '\'') + sql_2, dbconn)
-    elif len(stock_ids) < 1000:
-        df_total = pd.read_sql_query(sql_total + sql_codes.format(tuple(stock_ids)) + sql_2, dbconn)
-        df_float = pd.read_sql_query(sql_float + sql_codes.format(tuple(stock_ids)) + sql_2, dbconn)
-    else:  # 长度超过1000，读全部股票，再loc
-        df_total = pd.read_sql_query(sql_total + sql_2, dbconn)
-        df_total = df_total.loc[df_total['stock_id'].isin(stock_ids)].reset_index(drop=True)
-        df_float = pd.read_sql_query(sql_float + sql_2, dbconn)
-        df_float = df_float.loc[df_float['stock_id'].isin(stock_ids)].reset_index(drop=True)
-    df_total = df_total.dropna().reset_index(drop=True)
-    df_float = df_float.dropna().reset_index(drop=True)
-    df = pd.merge(df_total, df_float, on=df_total.columns.to_list(), how='outer') # 取并集
-    df = df.sort_values(by=['stock_id', 'dt', 'quantity'], ascending=False).reset_index(drop=True)
+    if stock_ids is None:  # 空的时候读取全部股票
+        df = pd.read_sql_query(sql_holder.format(report_period_start_date.strftime('%Y%m%d'), report_period_end_date.strftime('%Y%m%d')), dbconn).rename(columns=str.lower)
+    elif len(stock_ids) < 500:
+        assert isinstance(stock_ids, list), "stock_ids参数类型需为list"
+        sql_holder += sql_codes
+        df = pd.read_sql_query(sql_holder.format(report_period_start_date.strftime('%Y%m%d'), report_period_end_date.strftime('%Y%m%d'),
+                               ",".join(["'%s'" % s_id for s_id in stock_ids])), dbconn).rename(columns=str.lower)
+    else:  # 长度超过500, 分批读入
+        assert isinstance(stock_ids, list), "stock_ids参数类型需为list"
+        stock_id_list = cal.basicCal_cut(stock_ids, 500)
+        temp_list = []
+        for sl in stock_id_list:
+            df = pd.read_sql_query(sql_holder.format(report_period_start_date.strftime('%Y%m%d'), report_period_end_date.strftime('%Y%m%d'),
+                               ",".join(["'%s'" % s_id for s_id in sl])), dbconn).rename(columns=str.lower)
+            temp_list.append(df)
+        df = pd.concat(temp_list, axis=0)
+    df = df.sort_values(by=['stock_id', 'dt', 'quantity'], ascending=[True, True, False]).reset_index(drop=True)
     df.rename(columns={'dt': 'date'}, inplace=True)
     df['date'] = pd.to_datetime(df['date']).dt.date
     dbconn.close()
@@ -358,49 +357,74 @@ def wind_getHistoricalProductList(
     fund_types = None,          # Default are all types of funds, Check const.py for all types to use
     include_pm_info = False,    # 如果该参数为True，则同一个基金可能出现在多行！！因为曾经或者正在管理的所有基金经理都会各占一行。
     exclude_new_product=False,  # 去掉距离as_of_date最近三个月成立的基金产品
+    only_a_share=True,          # 是否只取A份额，默认为是 该选项对中港互认基金不生效
+    include_HKRcg_products=False  # 是否加入互认基金条目，默认不加入
 ):
     if exclude_new_product == True:
         assert as_of_date is not None, '参数exclude_new_product为True需要参数as_of_date不为None'
     dbconn = wind_connectWindDB()
-    sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_FULLNAME as product_full_name, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name, a.F_INFO_CORP_FUNDMANAGEMENTID as company_id, " \
+    sql_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_FULLNAME as product_full_name, a.F_INFO_CORP_FUNDMANAGEMENTID as company_id, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name," \
        " a.F_INFO_SETUPDATE as product_start_date,a.F_INFO_MATURITYDATE as product_end_date, a.F_INFO_TYPE as fund_open_type, d.F_MINM_HOLDING_PRD as min_holding_month, " \
        " b.F_INFO_MANAGER_GENDER as pm_gender, b.F_INFO_FUNDMANAGER_ID as pm_id, b.F_INFO_FUNDMANAGER as pm_name," \
        " b.F_INFO_MANAGER_STARTDATE as pm_start_date,b.F_INFO_MANAGER_LEAVEDATE as pm_end_date, " \
-       " c.S_INFO_SECTOR as type, c.S_INFO_SECTORENTRYDT as sector_start_date, c.S_INFO_SECTOREXITDT as sector_end_date "
+       " c.S_INFO_SECTOR as type_id, c.S_INFO_SECTORENTRYDT as sector_start_date, c.S_INFO_SECTOREXITDT as sector_end_date "
+    # 互认基金没有a.F_INFO_TYPE, d.F_MINM_HOLDING_PRD字段, 缺失列会在concat操作中自动补齐
+    sql_HKRcg_fund = "select a.F_INFO_WINDCODE as product_id, a.F_INFO_NAME as product_name, a.F_INFO_FULLNAME as product_full_name, a.F_INFO_CORP_FUNDMANAGEMENTID as company_windcode, a.F_INFO_CORP_FUNDMANAGEMENTCOMP as company_short_name," \
+       " a.F_INFO_SETUPDATE as product_start_date,a.F_INFO_MATURITYDATE as product_end_date, " \
+       " b.F_INFO_MANAGER_GENDER as pm_gender, b.F_INFO_FUNDMANAGER_ID as pm_id, b.F_INFO_FUNDMANAGER as pm_name, " \
+       " b.F_INFO_MANAGER_STARTDATE as pm_start_date,b.F_INFO_MANAGER_LEAVEDATE as pm_end_date, " \
+       " c.S_INFO_SECTOR as type_id, c.S_INFO_SECTORENTRYDT as sector_start_date, c.S_INFO_SECTOREXITDT as sector_end_date "
 
     if fund_types is not None and len(fund_types) == 1 and '指数增强' in fund_types[0]:
         sub_type = fund_types[0]
         fund_types = ['2001010103000000']
     else:
         sub_type = 'Other'
-
+    # 内地公募基金
     if fund_types is None:
-        full_sql = sql_fund + __sql_EquityFund + __sql_orderby
+        mainland_sql = sql_fund + (__sql_EquityFund if only_a_share else __sql_EquityFundAllShare) + __sql_orderby
     elif len(fund_types) == 1:
-        full_sql = sql_fund + __sql_EquityFund + __sql_EquityFund2.format('\''+fund_types[0]+'\'') + __sql_orderby
+        mainland_sql = sql_fund + (__sql_EquityFund if only_a_share else __sql_EquityFundAllShare) + __sql_EquityFund2.format('\''+fund_types[0]+'\'') + __sql_orderby
     else:
-        full_sql = sql_fund + __sql_EquityFund + __sql_EquityFund2.format(tuple(fund_types)) + __sql_orderby
-    df_fund = pd.read_sql_query(full_sql, dbconn)
+        mainland_sql = sql_fund + (__sql_EquityFund if only_a_share else __sql_EquityFundAllShare) + __sql_EquityFund2.format(tuple(fund_types)) + __sql_orderby
+    df_mainland_fund = pd.read_sql_query(mainland_sql, dbconn)
+    # 中港互认基金
+    if include_HKRcg_products:
+        if fund_types is None:
+            HKRcg_sql = sql_HKRcg_fund + __sql_HKRcgFund + __sql_orderby
+        elif len(fund_types) == 1:
+            HKRcg_sql = sql_HKRcg_fund + __sql_HKRcgFund + __sql_EquityFund2.format('\''+fund_types[0]+'\'') + __sql_orderby
+        else:
+            HKRcg_sql = sql_HKRcg_fund + __sql_HKRcgFund + __sql_EquityFund2.format(tuple(fund_types)) + __sql_orderby
+        df_HKRcg_fund = pd.read_sql_query(HKRcg_sql, dbconn)
+    else:
+        df_HKRcg_fund = pd.DataFrame()
+    # 合并内地与香港互认基金
+    df_fund = pd.concat([df_mainland_fund, df_HKRcg_fund], axis=0)
 
     if fund_types is not None and len(fund_types) == 1 and '指数增强' in sub_type:
         if sub_type == '300指数增强':
             df_fund = df_fund[df_fund['product_name'].str.contains('300')]
         elif sub_type == '500指数增强':
-            df_fund = df_fund[df_fund['product_name'].str.contains('500')]
+            df_fund = df_fund[(df_fund['product_name'].str.contains('500')) & (~df_fund['product_name'].str.contains('A500'))]
+        elif sub_type == 'A500指数增强':
+            df_fund = df_fund[df_fund['product_name'].str.contains('A500')]
+        elif sub_type == '800指数增强':
+            df_fund = df_fund[df_fund['product_name'].str.contains('800')]
         else:
             return
 
     df_fund = df_fund.loc[df_fund['product_start_date'].notnull()].reset_index(drop=True)  # 删掉未成立的基金
-    df_fund.replace({"type": const.const.WIND_SECTOR_CODE_MAP}, inplace=True)
-    if include_pm_info == False:
-        df_fund.drop(columns=['pm_gender', 'pm_id', 'pm_name', 'pm_start_date', 'pm_end_date'], inplace=True)
-        df_fund.drop_duplicates(inplace=True)
+    df_fund.insert(loc=df_fund.columns.get_loc('type_id')+1, column='type', value=df_fund['type_id'].map(const.const.WIND_SECTOR_CODE_MAP))  # 在type_id列后加入映射名称
     df_fund['product_start_date'] = pd.to_datetime(df_fund['product_start_date']).dt.date
     df_fund['product_end_date'] = pd.to_datetime(df_fund['product_end_date']).dt.date
     df_fund['pm_start_date'] = pd.to_datetime(df_fund['pm_start_date'], format='%Y%m%d').dt.date
     df_fund['pm_end_date'] = pd.to_datetime(df_fund['pm_end_date'], format='%Y%m%d').dt.date
     df_fund['sector_start_date'] = pd.to_datetime(df_fund['sector_start_date'], format='%Y%m%d').dt.date
     df_fund['sector_end_date'] = pd.to_datetime(df_fund['sector_end_date'], format='%Y%m%d').dt.date
+    if include_pm_info == False:
+        df_fund.drop(columns=['pm_gender', 'pm_id', 'pm_name', 'pm_start_date', 'pm_end_date'], inplace=True)
+        df_fund.drop_duplicates(inplace=True)
     if as_of_date is not None:
         if exclude_new_product:
             df_fund = df_fund[df_fund['product_start_date'].apply(lambda x: (as_of_date-x).days > 90)]
@@ -408,6 +432,7 @@ def wind_getHistoricalProductList(
             df_fund = df_fund[df_fund['product_start_date'].apply(lambda x: (as_of_date-x).days > 0)]
     dbconn.close()
     return df_fund
+
 
 
 # ------------------------------------------------------

@@ -208,7 +208,7 @@ if __name__ == "__main__":
     # results.to_excel(path+'聚类结果_20240905_分4类_2年.xlsx')
 
     ###### 固收+基金池
-    df = pd.read_excel('债基-输出结果/固收+基金池_20250731.xlsx')
+    df = pd.read_excel('债基-输出结果/固收+基金池_20251031.xlsx')
     enddate = df['date'][0].date()
     startdate = enddate - datetime.timedelta(365)
     fcode = df['product_id'].tolist()
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     results['Cluster2'] = cluster2['avg_return']
     results['Cluster3'] = cluster3['avg_return']
     # results['Cluster4'] = cluster4['avg_return']
-    results.to_excel('债基-输出结果/固收+聚类结果_20250731.xlsx')
+    results.to_excel('债基-输出结果/固收+聚类结果_20251031.xlsx')
     #######
 
     ####### 行业轮动基金

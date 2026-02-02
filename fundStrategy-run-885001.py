@@ -540,6 +540,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # -------------------
     # 多pm的产品会保留多行, 此处是为了引入pm信息
     product_score_with_info = pd.merge(fund_universe, product_score, on='product_id', how='left').sort_values('score', ascending=False)
+    product_score_with_info.to_excel("模型输出结果/基金打分结果(不去重版)_{}.xlsx".format(date))
     # 缓冲池中属于上一期模型结果的产品进行保留处理
     buffered_product_ids = product_score_with_info['product_id'].unique().tolist()[:buffer_size]
     retained_product_ids = previous_shortlist_res[previous_shortlist_res['product_id'].isin(buffered_product_ids)]['product_id'].to_list()
@@ -709,15 +710,31 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         })
 
     # 通过 WDS 获取基金行业信息
-    df_industry = MFanls.anlsMF_getMFIndustryDistribution(ann_date_temp,ann_date_temp,
-        fundlist,  # product_id基金代码，应为list格式（因数据库存储问题，优先使用场内代码）
-        'SW',  # 分类标准，输入格式:str，'SW' or 'CITICS'
-        1,  # 分类级别，输入格式:int
-        hidden_holdings=False,  # 是否包括上市公司公告里面的隐藏持仓
-        freq='Q',  # freq为频率，'Q'为季报，'H'为半年和年报
-        Top10=False,  # Top10为是否仅取季报前十大持仓
-        IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
-    )
+    # df_industry = MFanls.anlsMF_getMFIndustryDistribution(ann_date_temp,ann_date_temp,
+    #     fundlist,  # product_id基金代码，应为list格式（因数据库存储问题，优先使用场内代码）
+    #     'SW',  # 分类标准，输入格式:str，'SW' or 'CITICS'
+    #     1,  # 分类级别，输入格式:int
+    #     hidden_holdings=False,  # 是否包括上市公司公告里面的隐藏持仓
+    #     freq='Q',  # freq为频率，'Q'为季报，'H'为半年和年报
+    #     Top10=False,  # Top10为是否仅取季报前十大持仓
+    #     IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
+    # )
+    df_industry2 = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, fundlist, 'SW', level = 1)
+    df_industry2_clean = df_industry2[['product_id', 'industry', 'industry_weight', 'report_date']].copy()
+    df_industry2_clean.rename(columns={'report_date': 'date'}, inplace=True)
+    df_industry2_clean['date'] = pd.to_datetime(df_industry2_clean['date'])
+    df_industry = df_industry2_clean.pivot_table(
+        index=['date', 'product_id'],  # 行：日期+产品ID
+        columns='industry',  # 列：行业名称
+        values='industry_weight',  # 值：行业权重
+        fill_value=0,  # 缺失值填0
+        aggfunc='sum'  # 聚合方式（重复行求和，无重复则等价于直接取值）
+    ).reset_index()
+    # result_industry_sum = pd.pivot_table(df_industry2, columns='industry', index=['report_date', 'product_id'],
+    #                                      values='industry_weight', aggfunc='first').fillna(0).reset_index()
+
+
+
     product_score_with_info = pd.merge(product_score_with_info, df_industry.drop('date', axis=1), on='product_id', how='left')
     # 输出因子打分结果
     product_score_with_info_output = pd.merge(product_score_with_info, product_score, on = 'product_id', how = 'left')
@@ -863,11 +880,11 @@ if __name__ == '__main__':
     # 模型回溯区间
     model_start_date = datetime.date(2025, 6, 30)
     # model_start_date = datetime.date(2024,7,31)
-    model_end_date = datetime.date(2025, 10, 31)
+    model_end_date = datetime.date(2026, 1, 30)
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,10,31)
+    model_date = datetime.date(2026,1,30)
     ann_date = datetime.date(2025,6,30)
     ###
 

@@ -888,19 +888,19 @@ def fstrat_getCC30ModelBackTestReturnSeries(
 
 if __name__ == '__main__':
     # 模型回溯区间
-    model_start_date = datetime.date(2024, 12, 31)
+    model_start_date = datetime.date(2024, 12, 30)
     # model_start_date = datetime.date(2024,7,31)
-    model_end_date = datetime.date(2025, 4, 30)
+    model_end_date = datetime.date(2025, 12, 16)
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2025,4,30)
-    ann_date = datetime.date(2024,12,31)
+    model_date = datetime.date(2025,1,31)
+    ann_date = datetime.date(2024,6,30)
     ###
 
     # # cal & cache factors
     print(model_date)
-    fstrat_getCC30ProductScore(date=model_date, path = '投顾-输出结果/投顾固收+基金池_2025-04-30.xlsx', model_freq=model_freq, benchmark='000906.SH', rf=0.03)
+    fstrat_getCC30ProductScore(date=model_date, path = '投顾-输出结果/投顾基金池_2025-10-31.xlsx', model_freq=model_freq, benchmark='000906.SH', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 
@@ -918,7 +918,7 @@ if __name__ == '__main__':
 
     # 基金选择
     print(model_date)
-    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, '投顾-输出结果/投顾固收+基金池_2025-04-30.xlsx',model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
+    fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, '投顾-输出结果/投顾基金池_2025-10-31.xlsx',model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
                                                                  original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
     # model_start_date = datetime.date(2022,10,31)

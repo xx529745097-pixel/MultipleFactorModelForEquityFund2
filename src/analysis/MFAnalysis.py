@@ -648,14 +648,23 @@ def anlsMF_getMFHoldingsFinData(
 # 主要用于补充季报的持仓，也有可能与基金季报公布的重复
 # ------------------------------------------------
 def anlsMF_getMFHiddenHoldings(
-        product_id                     # product_id基金代码，应为str格式（因数据库存储问题，优先使用场内代码）
+    start_date,           # datetime.date 起始日期
+    end_date,             # datetime.date 截止日期
+    product_ids=None      # list, 产品id列表
 ):
-    assert (type(product_id) == str), '基金代码输入格式需为str'
-    AShare_holder = anlsStk_getAShareHolders()
-    df = wind.wind_getCurrentProductList() # 获得基金全称，！目前只考虑最新名称，未考虑曾用名，比如易方达中小盘，CFundPreviousName仅有简称，不能在上市公司股东里面做检索
-    full_name = df.loc[df['product_id'] == product_id]['product_full_name'].values[0]
-    result = AShare_holder.loc[AShare_holder['holder_name'].str.contains(full_name)].reset_index(drop=True)
-    result['product_id'] = product_id
+    assert isinstance(start_date, datetime.date), "start_date需为datetime.date类型"
+    assert isinstance(end_date, datetime.date), "end_date需为datetime.date类型"
+    AShare_float_holders = anlsStk_getAShareHolders(start_date, end_date, float_holders=True)
+    mf_product_fullname = wind.wind_getHistoricalProductList(as_of_date=end_date).groupby(['product_id'], as_index=False).agg({'product_full_name': 'last'})
+    if product_ids:
+        assert isinstance(product_ids, list), 'product_ids输入格式需为list'
+        mf_product_fullname = mf_product_fullname[mf_product_fullname['product_id'].isin(product_ids)]
+    # 先用'基金'筛选，减少数量加速下方查询过程，提取holder_name中基金全称的部分
+    AShare_float_holders = AShare_float_holders[AShare_float_holders['holder_name'].str.contains('基金')].copy()
+    pattern = re.compile("|".join(map(re.escape, mf_product_fullname['product_full_name'].to_list())), re.IGNORECASE)
+    # pattern.search返回match对象或None，若不为None则提取匹配的字符串
+    AShare_float_holders['product_full_name'] = AShare_float_holders['holder_name'].apply(lambda x: pattern.search(x)).apply(lambda x: x.group(0) if x else x)
+    result = pd.merge(AShare_float_holders, mf_product_fullname[['product_full_name', 'product_id']], on='product_full_name', how='inner')
     return result
 
 # ------------------------------------------------
@@ -674,27 +683,59 @@ def anlsMF_getMFStockHoldings(
 ):
     portfolio = wind.wind_getMFStockHoldings(product_id, freq, Top10, start_date, end_date, only_a_share, passive_index_fund)
     if hiddenHoldings == True: # 如果不考虑隐藏持仓，无需其他操作
-        if freq == 'H': # 只看中报和年报就不需要隐藏持仓了
-            hiddenHoldings = pd.DataFrame()
-        else:
-            hiddenHoldings = anlsMF_getMFHiddenHoldings(product_id[0])
-            del hiddenHoldings['holder_name'], hiddenHoldings['trade_date']
-            hiddenHoldings['stock_market'] = 'A'
-
-        result = portfolio.append(hiddenHoldings).reset_index(drop=True)
-        result['company_short_name'].fillna(method='ffill', inplace=True)
-        result = result.sort_values(by=['date', 'stk_value'], ascending=False).reset_index(drop=True)
-        result = result.drop_duplicates(['date','stock_id']).reset_index(drop=True) # 去重
-        nav = portfolio.groupby('date').apply(lambda x: x['stk_value'].max() / x['stk_value_to_nav'].max()).to_frame().reset_index().rename(columns={0:'nav'})
-        allstk = portfolio.groupby('date').apply(lambda x: x['stk_value'].max() / x['stk_value_to_allstk'].max()).to_frame().reset_index().rename(columns={0: 'allstk'})
-        result = pd.merge(result, nav, how='left', on='date')
-        result = pd.merge(result, allstk, how='left', on='date')
-        result['stk_value_to_nav'] = result['stk_value'] / result['nav']
-        result['stk_value_to_allstk'] = result['stk_value'] / result['allstk']
-        del result['nav'], result['allstk']
+        # 上市公司的季报和半年报更新存在延迟，可能存在基金季报已出但上市公司未出的情况，因此通常最新hidden holding的补充效果是不如回测历史季报节点的
+        assert freq == 'Q', "hiddenHoldings打开时freq需为Q, 只看中报和年报就不需要隐藏持仓了"
+        assert (start_date is not None) and (end_date is not None), "hiddenHoldings分析时，需传入start_date和end_date"
+        hiddenHoldings = anlsMF_getMFHiddenHoldings(start_date, end_date, product_id)[['date', 'product_id', 'stock_id', 'stock_name', 'stk_value']]
+        # 仅保留不在季报持仓中的标的
+        hiddenHoldings = hiddenHoldings[hiddenHoldings['date'].isin(portfolio['date'].to_list()) & (hiddenHoldings['product_id'].isin(portfolio['product_id'].to_list()))].copy()
+        hiddenHoldings['stock_market'] = 'A'
+        # 为保证精度，选取stk_value最大的标的计算nav和allstk
+        aux_data = portfolio.sort_values(['date', 'product_id', 'stk_value']).groupby(['date', 'product_id'], as_index=False).last()
+        aux_data['nav'] = aux_data['stk_value'] / aux_data['stk_value_to_nav']
+        aux_data['allstk'] = aux_data['stk_value'] / aux_data['stk_value_to_allstk']
+        hiddenHoldings = pd.merge(hiddenHoldings, aux_data[['date', 'product_id', 'nav', 'allstk', 'company_short_name']], on=['date', 'product_id'], how='left')
+        hiddenHoldings['stk_value_to_nav'] = hiddenHoldings['stk_value'] / hiddenHoldings['nav']
+        hiddenHoldings['stk_value_to_allstk'] = hiddenHoldings['stk_value'] / hiddenHoldings['allstk']
+        del hiddenHoldings['nav'], hiddenHoldings['allstk']
+        result = pd.concat([portfolio, hiddenHoldings], axis=0).drop_duplicates(subset=['date', 'product_id', 'stock_id'], keep='first')  # 报告期持仓中已有标的自动忽略
     else:
         result = portfolio.copy()
     return result
+#
+# def anlsMF_getMFStockHoldings(
+#         product_id=None,         # product_id基金代码，应为list格式（因数据库存储问题，优先使用场内代码），为None时，相当于获取全部持仓
+#         freq = 'Q',              # freq为频率，'Q'为季报，'H'为半年和年报
+#         Top10 = False,           # Top10为是否仅取季报前十大持
+#         hiddenHoldings=False,    # 是否加入上市公司前十大流通股东和股东里面隐藏的基金持仓
+#         start_date=None,         # 起始日期
+#         end_date=None,           # 结束日期
+#         only_a_share=True,       # 是否只取A份额，默认为是
+#         passive_index_fund=False,  # 是否包含被动指数基金，默认为否
+# ):
+#     portfolio = wind.wind_getMFStockHoldings(product_id, freq, Top10, start_date, end_date, only_a_share, passive_index_fund)
+#     if hiddenHoldings == True: # 如果不考虑隐藏持仓，无需其他操作
+#         if freq == 'H': # 只看中报和年报就不需要隐藏持仓了
+#             hiddenHoldings = pd.DataFrame()
+#         else:
+#             hiddenHoldings = anlsMF_getMFHiddenHoldings(product_id[0])
+#             del hiddenHoldings['holder_name'], hiddenHoldings['trade_date']
+#             hiddenHoldings['stock_market'] = 'A'
+#
+#         result = portfolio.append(hiddenHoldings).reset_index(drop=True)
+#         result['company_short_name'].fillna(method='ffill', inplace=True)
+#         result = result.sort_values(by=['date', 'stk_value'], ascending=False).reset_index(drop=True)
+#         result = result.drop_duplicates(['product_id', 'date','stock_id']).reset_index(drop=True) # 去重
+#         nav = portfolio.groupby('date').apply(lambda x: x['stk_value'].max() / x['stk_value_to_nav'].max()).to_frame().reset_index().rename(columns={0:'nav'})
+#         allstk = portfolio.groupby('date').apply(lambda x: x['stk_value'].max() / x['stk_value_to_allstk'].max()).to_frame().reset_index().rename(columns={0: 'allstk'})
+#         result = pd.merge(result, nav, how='left', on='date')
+#         result = pd.merge(result, allstk, how='left', on='date')
+#         result['stk_value_to_nav'] = result['stk_value'] / result['nav']
+#         result['stk_value_to_allstk'] = result['stk_value'] / result['allstk']
+#         del result['nav'], result['allstk']
+#     else:
+#         result = portfolio.copy()
+#     return result
 
 # ---------------------------------------------------------
 # 获取公募FOF多头行业穿透
@@ -984,7 +1025,7 @@ def anlsMF_getMFStockHoldingSimulation(
 ):
     assert isinstance(date, datetime.date), "date需为datetime.date类型"
     assert isinstance(product_ids, list), "product_ids需为list类型"
-    holding_data = wind.wind_getMFStockHoldings(product_id=product_ids, freq='Q', start_date=date - datetime.timedelta(days=366), end_date=date).sort_values(['product_id', 'date'])
+    holding_data = anlsMF_getMFStockHoldings(product_id=product_ids, freq='Q', hiddenHoldings=True, start_date=date - datetime.timedelta(days=366), end_date=date).sort_values(['product_id', 'date'])
     holding_data['annual_flag'] = holding_data['date'].apply(lambda x: (x.month == 6 and x.day == 30) or (x.month == 12 and x.day == 31))  # 标记年报期
     # 因二季报和半年报/四季报和年报公布时间存在间隔，在12.31-3.30和6.30-8.31区间0630和1231持仓当作季报处理(但不限制只取Top10)
     # holding_data回溯时间为366天，至少会包含一期有效的年报数据
@@ -992,7 +1033,7 @@ def anlsMF_getMFStockHoldingSimulation(
         holding_data.loc[holding_data['date'].apply(lambda x: (x.month == 12 and x.day == 31)), 'annual_flag'] = False
     elif (date > datetime.date(date.year, 6, 30)) and (date <= datetime.date(date.year, 8, 31)):
         holding_data.loc[holding_data['date'].apply(lambda x: (x.month == 6 and x.day == 30)), 'annual_flag'] = False
-    product_position_info = wind.wind_getMFAssetAllocation(product_ids=holding_data['product_id'].unique().tolist()).rename(columns={'product_stk_value_to_nav': 'stk_total_position'})
+    product_position_info = wind.wind_getMFAssetAllocation(start_date=date - datetime.timedelta(days=366), end_date=date, product_ids=holding_data['product_id'].unique().tolist()).rename(columns={'product_stk_value_to_nav': 'stk_total_position'})
     holding_data = pd.merge(holding_data, product_position_info[['date', 'product_id', 'stk_total_position']], on=['date', 'product_id'], how='left')
     # 最新持仓数据
     latest_holding_data = holding_data.groupby(['product_id'], as_index=False).apply(lambda x: x[x['date'] == x['date'].max()])
@@ -1000,8 +1041,9 @@ def anlsMF_getMFStockHoldingSimulation(
     annual_holding_data = latest_holding_data[latest_holding_data['annual_flag']]
     # 最新持仓披露为季度的产品，再加入最新一期半年度持仓数据，结合两期持仓数据调整得到模拟持仓
     quarterly_holding_data = latest_holding_data[~latest_holding_data['annual_flag']]
-    quarterly_holding_data = quarterly_holding_data.append(holding_data[(holding_data['product_id'].isin(quarterly_holding_data['product_id'].unique().tolist()))
-                     & (holding_data['annual_flag'])].groupby(['product_id'], as_index=False).apply(lambda x: x[x['date'] == x['date'].max()]))
+    quarterly_holding_data_append = holding_data[(holding_data['product_id'].isin(quarterly_holding_data['product_id'].unique().tolist()))
+                                                 & (holding_data['annual_flag'])].groupby(['product_id'], as_index=False).apply(lambda x: x[x['date'] == x['date'].max()])
+    quarterly_holding_data = pd.concat([quarterly_holding_data, quarterly_holding_data_append], axis=0)
     def adjustQuarterlyHoldingData(x):
         # 季报持仓数据
         quarterly_holding = x[~x['annual_flag']].sort_values('stk_value_to_nav', ascending=False)
@@ -1009,11 +1051,14 @@ def anlsMF_getMFStockHoldingSimulation(
         # 年报持仓仅保留不在季报持仓中的股票，调整权重对齐最新季度股票总仓位
         remain_position = quarterly_total_position - quarterly_holding['stk_value_to_nav'].sum()
         quarterly_excluded_annual_holding = x[(x['annual_flag']) & (~x['stock_id'].isin(quarterly_holding['stock_id'].to_list()))].copy()
-        quarterly_excluded_annual_holding['stk_value_to_nav'] = quarterly_excluded_annual_holding['stk_value_to_nav'] * (remain_position / quarterly_excluded_annual_holding['stk_value_to_nav'].sum())
+        if quarterly_excluded_annual_holding['stk_value_to_nav'].sum() < 1e-5:  # 避免出现分母为0的情况
+            quarterly_excluded_annual_holding['stk_value_to_nav'] = 0
+        else:
+            quarterly_excluded_annual_holding['stk_value_to_nav'] = quarterly_excluded_annual_holding['stk_value_to_nav'] * (remain_position / quarterly_excluded_annual_holding['stk_value_to_nav'].sum())
         return pd.concat([quarterly_holding, quarterly_excluded_annual_holding], axis=0)
-    quarterly_holding_data = quarterly_holding_data.groupby('product_id', as_index=False).apply(adjustQuarterlyHoldingData)
-    holding_simulation_res = pd.concat([annual_holding_data, quarterly_holding_data], axis=0)[['product_id', 'stock_id', 'stock_name', 'stk_value_to_nav']]
-    holding_simulation_res['date'] = date
+    if len(quarterly_holding_data) > 0:
+        quarterly_holding_data = quarterly_holding_data.groupby('product_id', as_index=False).apply(adjustQuarterlyHoldingData)
+    holding_simulation_res = pd.concat([annual_holding_data, quarterly_holding_data], axis=0)[['date', 'product_id', 'stock_id', 'stock_name', 'stk_value_to_nav', 'stock_market']]
     return holding_simulation_res
 
 # -------------------------------------------
@@ -1043,6 +1088,40 @@ def anlsMF_getMFStockHoldingSimulatedDailyReturn(
     product_info = product_info.groupby(['product_id'], as_index=False).agg({'product_name': 'first', 'pm_name': lambda x: ','.join([pm for pm in x])})
     product_sim_ret = pd.merge(product_info[['product_id', 'product_name', 'pm_name']], product_sim_ret, on='product_id', how='right')
     return product_sim_ret
+
+# -------------------------------------------------------------------
+# 公募基金模拟完整持仓的行业穿透，用于基金组合优化
+# -------------------------------------------------------------------
+def anlsMF_getMFSimHoldingIndustryExposure(
+    report_date,                    # 参考报告的截至日期，输入格式:datetime.date
+    product_ids,                     # product_id基金代码，应为list格式（因数据库存储问题，优先使用场内代码）
+    company,                        # 分类标准，输入格式:str，'SW' or 'CITICS'
+    level,                          # 分类级别，输入格式:int
+    expand_weight=False,            # 是否将单只基金的行业比例之和张成100%，默认为否，即行业求和结果为权益配置比例；对基金单独分析时可张成100%，对FOF组合分析时此步骤为否
+):
+    assert (type(report_date) == datetime.date), '日期输入格式需为datetime.date'
+    assert (type(product_ids) == list), '基金代码输入格式需为list'
+    portfolio = anlsMF_getMFStockHoldingSimulation(report_date, product_ids)  # 使用公募模拟持仓进行测算，股票权重和资产配置表已对齐
+    if portfolio.empty:  # 由于目前使用场景是将组合持仓的全部product_id输入，可能不会包括多头公募，故目前portfolio为空时不报错，返回空df
+        return pd.DataFrame()
+    # 取最新一期持仓数据
+    port_asset_alloc = wind.wind_getMFAssetAllocation(start_date=report_date-datetime.timedelta(days=365), end_date=report_date, product_ids=product_ids,
+                                                      only_a_share=False).fillna(0)[['product_id', 'product_full_name', 'date', 'product_stk_value_to_nav', 'product_hkstk_value_to_nav']]
+    portfolio = pd.merge(portfolio, port_asset_alloc, on=['product_id', 'date'], how='left')
+    portfolio['product_latest_report_date'] = portfolio.groupby('product_id')['date'].transform('max')
+    # portfolio = portfolio[portfolio['date'] == portfolio['product_latest_report_date']]
+    # FIXME 过滤掉持仓权重小于0.001%的股票，避免下方权重展开时放大误差
+    portfolio = portfolio[portfolio['stk_value_to_nav'] >= 1e-5]
+    # 填充行业标签
+    portfolio = _getIndustry(portfolio, company, level, False)
+    if expand_weight:  # 若expand_weight为True, 先将持仓张成100%
+        portfolio['stk_value_to_nav'] = portfolio.groupby(['product_id'])['stk_value_to_nav'].transform(lambda x: x/x.sum()).fillna(0)  # 少量刚建仓产品股票持仓金额接近0导致的nan，此处进行填充
+    industry_result = portfolio.groupby(['product_id', 'industry'], as_index=False).agg({'stk_value_to_nav': 'sum'}).rename(columns={'stk_value_to_nav': 'industry_weight'})
+    industry_result.sort_values(['product_id', 'industry'], ascending=True, inplace=True)
+    industry_result['industry_level'] = company + '_' + str(level)
+    industry_result['report_date'] = portfolio['date'].max()
+    industry_result['earliest_report_date'] = portfolio['date'].min()  # 若处于公募报告正在披露的阶段，会有report_date不统一的情况，该列用于存储所选基金中报告期最早时间，用于判断
+    return industry_result
 
 # -------------------------------------------
 # 公募基金经理调研数量变动指标
