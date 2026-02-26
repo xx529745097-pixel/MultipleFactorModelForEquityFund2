@@ -719,7 +719,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     #     Top10=False,  # Top10为是否仅取季报前十大持仓
     #     IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
     # )
-    df_industry2 = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, fundlist, 'SW', level = 1)
+    df_industry2 = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, fundlist, 'SW', level = 2)
     df_industry2_clean = df_industry2[['product_id', 'industry', 'industry_weight', 'report_date']].copy()
     df_industry2_clean.rename(columns={'report_date': 'date'}, inplace=True)
     df_industry2_clean['date'] = pd.to_datetime(df_industry2_clean['date'])
@@ -916,3 +916,4 @@ if __name__ == '__main__':
     # back-test model from cached files
     # fstrat_getCC30ModelBackTestReturnSeries(start_date=model_start_date, end_date=model_end_date,
     #                                         path = fstrat_config.cc30_shortlist_res_path_backtest1, model_freq=model_freq)
+

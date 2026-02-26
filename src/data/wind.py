@@ -2081,13 +2081,29 @@ def wind_getAllHistIndustriesMap(
     assert (company == 'SW' or company == 'CITICS'), 'company必须为SW或CITICS'
     dbconn = wind_connectWindDB()
     if company == 'CITICS':
-        sql_A = "select a.S_INFO_WINDCODE as stock_id, b.Industriesname as industry, a.ENTRY_DT, a.REMOVE_DT " \
+        sql = "select a.S_INFO_WINDCODE as stock_id, b.Industriesname as industry, a.ENTRY_DT, a.REMOVE_DT " \
               "from AShareIndustriesClassCITICS a, AShareIndustriesCode b " \
               "where substr(a.CITICS_IND_CODE, 1, {}) = substr(b.INDUSTRIESCODE, 1, {}) " \
               "and b.LEVELNUM = '{}' " \
               "order by a.S_INFO_WINDCODE, a.ENTRY_DT"
-        industry_AShare = pd.read_sql_query(sql_A.format(2+level*2, 2+level*2, str(level+1)), dbconn)
-    else:  # 申万全部用的2021版分类，这个分类里面，对A股有历史分类，对港股通股票只有今年以来的分类
+        industry_AShare = pd.read_sql_query(sql.format(2+level*2, 2+level*2, str(level+1)), dbconn)
+
+        sql = "select S_INFO_WINDCODE as stock_id, CITICS_IND_NAME as industry, CHANGE_DT, CHANGE_TYPE " \
+              "from HKSharesCITICSIndustriesClass " \
+              "order by S_INFO_WINDCODE, CHANGE_DT"
+        industry_HKShare = pd.read_sql_query(sql, dbconn)  # 港股通中信分类, 港股通换行业的不多，主要是不断出入港股通名单
+        industry_HKShare['industry'] = industry_HKShare['industry'].apply(lambda x: x.split('(')[0])  # 去掉港股通字符
+        industry_HKShare['remove_dt'] = industry_HKShare.groupby(['stock_id'])['change_dt'].shift(-1)  # 下一个change_dt就是这一个change_dt对应的remove_dt
+        industry_HKShare = industry_HKShare.loc[industry_HKShare['change_type'] == 1].reset_index(drop=True)
+        industry_HKShare.drop(['change_type'], axis=1, inplace=True)
+        industry_HKShare.rename(columns={'change_dt': 'entry_dt'}, inplace=True)
+
+        if level == 1:
+            industry = industry_AShare.append(industry_HKShare).reset_index(drop=True)
+        else:
+            industry = industry_AShare
+
+    elif company == 'SW': # 申万全部用的2021版分类，这个分类里面，对A股有历史分类，对港股通股票只有今年以来的分类
         sql = "select a.S_INFO_WINDCODE as stock_id, b.Industriesname as industry, a.ENTRY_DT, a.REMOVE_DT " \
               "from AShareSWNIndustriesClass a, AShareIndustriesCode b " \
               "where substr(a.SW_IND_CODE, 1, {}) = substr(b.INDUSTRIESCODE, 1, {}) " \
@@ -2095,21 +2111,19 @@ def wind_getAllHistIndustriesMap(
               "order by a.S_INFO_WINDCODE, a.ENTRY_DT"
         industry_AShare = pd.read_sql_query(sql.format(2 + level * 2, 2 + level * 2, str(level + 1)), dbconn)
 
-    # 公募港股按恒生一级分类，与私募产品港股行业暴露标准统一
-    sql_H = "select a.S_INFO_WINDCODE as stock_id, b.INDUSTRIESNAME as industry, a.ENTRY_DT, a.REMOVE_DT " \
-            "from HKStockHSIndustriesMembers a, HKStockIndustriesCode b " \
-            "where substr(a.HS_IND_CODE, 1, {}) = substr(b.INDUSTRIESCODE, 1, {}) " \
-            "and b.LEVELNUM = '{}' " \
-            "order by a.S_INFO_WINDCODE, a.ENTRY_DT"
-    industry_HKShare = pd.read_sql_query(sql_H.format(6, 6, '1'), dbconn)
-    industry_HKShare['industry'] = industry_HKShare['industry'].apply(lambda x: x.split('(')[0] + '_港股')  # 去掉(HS) 加上'_港股' 与私募恒生行业分类保持一致
-
-    industry = industry_AShare.append(industry_HKShare).reset_index(drop=True)
+        sql = "select a.S_INFO_WINDCODE as stock_id, b.Industriesname as industry, a.ENTRY_DT, a.REMOVE_DT " \
+              "from HKShareSWNIndustriesClass a, AShareIndustriesCode b " \
+              "where substr(a.SW_IND_CODE, 1, {}) = substr(b.INDUSTRIESCODE, 1, {}) " \
+              "And b.LEVELNUM = '{}' " \
+              "order by a.S_INFO_WINDCODE, a.ENTRY_DT"
+        industry_HKShare = pd.read_sql_query(sql.format(2 + level * 2, 2 + level * 2, str(level + 1)), dbconn)
+        industry = industry_AShare.append(industry_HKShare).reset_index(drop=True)
     industry['entry_dt'] = pd.to_datetime(industry['entry_dt']).dt.date
     industry['remove_dt'] = pd.to_datetime(industry['remove_dt']).dt.date
     industry['remove_dt'].fillna(datetime.date.today(), inplace=True)
     dbconn.close()
     return industry
+
 
 # ------------------------------------------------------
 # 获取股票的任意时点分类
