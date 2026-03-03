@@ -19,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 import pulp
 
-date = datetime.date(2024,12,31)
+date = datetime.date(2025,12,31)
 
 
 # 根据基准类型生成行业权重
