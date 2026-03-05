@@ -1025,7 +1025,7 @@ def anlsMF_getMFStockHoldingSimulation(
 ):
     assert isinstance(date, datetime.date), "date需为datetime.date类型"
     assert isinstance(product_ids, list), "product_ids需为list类型"
-    holding_data = wind.wind_getMFStockHoldings(product_id=product_ids, freq='Q', start_date=date - datetime.timedelta(days=366), end_date=date).sort_values(['product_id', 'date'])
+    holding_data = wind_getMFStockHoldings(product_id=product_ids, freq='Q', start_date=date - datetime.timedelta(days=366), end_date=date, only_a_share=False).sort_values(['product_id', 'date'])
     holding_data['annual_flag'] = holding_data['date'].apply(lambda x: (x.month == 6 and x.day == 30) or (x.month == 12 and x.day == 31))  # 标记年报期
     # 因二季报和半年报/四季报和年报公布时间存在间隔，当前日期在12.31-3.30或6.30-8.31区间时，最近一期的0630或1231持仓当作季报处理(但不限制只取Top10)
     # holding_data回溯时间为366天，至少会包含一期有效的年报数据
@@ -1034,7 +1034,7 @@ def anlsMF_getMFStockHoldingSimulation(
         holding_data.loc[holding_data['date'] == datetime.date(today_date.year-1, 12, 31), 'annual_flag'] = False
     elif (today_date > datetime.date(today_date.year, 6, 30)) and (today_date <= datetime.date(today_date.year, 8, 31)):
         holding_data.loc[holding_data['date'] == datetime.date(today_date.year, 6, 30), 'annual_flag'] = False
-    product_position_info = wind.wind_getMFAssetAllocation(product_ids=holding_data['product_id'].unique().tolist()).rename(columns={'product_stk_value_to_nav': 'stk_total_position'})
+    product_position_info = wind_getMFAssetAllocation(product_ids=holding_data['product_id'].unique().tolist(), only_a_share=False).rename(columns={'product_stk_value_to_nav': 'stk_total_position'})
     holding_data = pd.merge(holding_data, product_position_info[['date', 'product_id', 'stk_total_position']], on=['date', 'product_id'], how='left')
     # 最新持仓数据
     latest_holding_data = holding_data.groupby(['product_id'], as_index=False).apply(lambda x: x[x['date'] == x['date'].max()])
@@ -1054,7 +1054,7 @@ def anlsMF_getMFStockHoldingSimulation(
         quarterly_excluded_annual_holding['stk_value_to_nav'] = quarterly_excluded_annual_holding['stk_value_to_nav'] * (remain_position / quarterly_excluded_annual_holding['stk_value_to_nav'].sum())
         return pd.concat([quarterly_holding, quarterly_excluded_annual_holding], axis=0)
     quarterly_holding_data = quarterly_holding_data.groupby('product_id', as_index=False).apply(adjustQuarterlyHoldingData)
-    holding_simulation_res = pd.concat([annual_holding_data, quarterly_holding_data], axis=0)[['product_id', 'stock_id', 'stock_name', 'stk_value_to_nav', 'stock_market']]
+    holding_simulation_res = pd.concat([annual_holding_data, quarterly_holding_data], axis=0)
     holding_simulation_res['date'] = date
     return holding_simulation_res
 
