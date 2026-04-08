@@ -845,8 +845,8 @@ if __name__ == "__main__":
     # 动量回看期（月数）
     MOMENTUM_LOOKBACK = 12
 
-    START_DATE = '2025-09-01'
-    END_DATE = '2026-03-09'
+    START_DATE = '2025-08-31'
+    END_DATE = '2026-04-02'
     TARGET_VOLATILITY = 0.06  # 目标年化波动率6%
     OUTPUT_DIR = 'risk_parity_results'
     # 设置中文字体支持

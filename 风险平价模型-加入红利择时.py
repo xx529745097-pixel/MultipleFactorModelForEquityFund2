@@ -10,7 +10,7 @@ from scipy.optimize import minimize, Bounds, NonlinearConstraint
 import time
 
 
-def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=100000,
+def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=200000,
                                     precision=1e-12, min_eig_thresh=1e-10,
                                     verbose=True, method='auto'):
     warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy.optimize")
@@ -30,6 +30,7 @@ def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=10000
     valid_cov = cov_matrix[valid_idx][:, valid_idx].copy()
     valid_budget = risk_budget[valid_idx].copy()
 
+    # 微弱正则，只防止矩阵奇异，不改变优化结果
     eigenvalues = np.linalg.eigvalsh(valid_cov)
     min_eigenvalue = np.min(eigenvalues)
     if min_eigenvalue < min_eig_thresh:
@@ -47,34 +48,35 @@ def robust_risk_budget_optimization(cov_matrix, risk_budget=None, max_iter=10000
         return np.sum((risk_contrib_ratio - valid_budget) ** 2)
 
     constraints = []
-    bounds = Bounds(0, np.inf)
+    bounds = Bounds(0.0, np.inf)  # ✅ 权重最小值严格=0，无下限
     inv_cov = np.linalg.pinv(valid_cov)
     min_var_w = inv_cov.sum(axis=1) / inv_cov.sum()
     w0 = min_var_w
 
-    if method == 'auto':
-        method = 'trust-constr' if n_valid > 5 else 'SLSQP'
-
-    start_time = time.time()
-    options = {'maxiter': max_iter, 'disp': verbose}
-
-    if method == 'SLSQP':
-        method_options = {'ftol': precision, 'eps': 1e-10}
-    elif method == 'trust-constr':
-        method_options = {'xtol': precision, 'gtol': precision, 'barrier_tol': precision, 'verbose': 1 if verbose else 0}
-    else:
-        raise ValueError(f"未知优化方法: {method}")
-
-    options.update(method_options)
+    # ==================== 核心修复：只改优化器，让它不早停 ====================
+    method = 'SLSQP'  # 固定用SLSQP，trust-constr容易卡住
+    options = {
+        'maxiter': max_iter,
+        'disp': verbose,
+        'ftol': 1e-12,
+        'eps': 1e-12,     # 更小步长，允许继续优化
+        'iprint': -1
+    }
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = minimize(objective, w0, method=method, bounds=bounds, constraints=constraints, options=options)
+        result = minimize(
+            objective, w0,
+            method=method,
+            bounds=bounds,
+            constraints=constraints,
+            options=options
+        )
 
     full_weights = np.zeros(n, dtype=np.float64)
     full_weights[valid_idx] = result.x
     full_weights[zero_idx] = 0
-    full_weights = np.maximum(full_weights, 0)
+    full_weights = np.maximum(full_weights, 0.0)
     full_weights /= full_weights.sum() + 1e-20
 
     return full_weights, result
@@ -328,7 +330,7 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 
     net_value_df = pd.DataFrame({'date': portfolio_values.index, 'NetValue': portfolio_values.values})
     perf_df = calculate_performance_analysis(net_value_df)
-    output_path = os.path.join(output_dir, 'risk_parity_backtest_results.xlsx')
+    output_path = os.path.join(output_dir, 'risk_parity_backtest_results_加入红利择时.xlsx')
 
     with pd.ExcelWriter(output_path) as writer:
         net_value_df.join(daily_weights).to_excel(writer, sheet_name='每日数据', index=False)
@@ -344,9 +346,10 @@ if __name__ == "__main__":
     plt.rcParams['axes.unicode_minus'] = False
 
     RISK_BUDGETS = {
-        'IC.CFE': 0.0833,
-        'IF.CFE': 0.0833,
-        'IM.CFE': 0.0834,
+        'IC.CFE': 0.04167,
+        'IF.CFE': 0.04167,
+        'IM.CFE': 0.04166,
+        'Dividend': 0.125,
         'NDX.GI': 0.0833,
         'HSTECH.HI': 0.0833,
         'N225.GI': 0.0834,
@@ -357,7 +360,7 @@ if __name__ == "__main__":
     }
 
     ASSET_CLASS_MAPPING = {
-        'IC.CFE': '股票', 'IF.CFE': '股票', 'IM.CFE': '股票',
+        'IC.CFE': '股票', 'IF.CFE': '股票', 'IM.CFE': '股票', 'Dividend':'股票',
         'NDX.GI': '境外股票', 'HSTECH.HI': '境外股票', 'N225.GI': '境外股票',
         'CBA05201.CS': '债券',
         'AU.SHF': '商品', 'M.DCE': '商品', '159980.SZ': '商品'
