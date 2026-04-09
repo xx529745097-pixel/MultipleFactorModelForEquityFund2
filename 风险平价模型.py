@@ -369,7 +369,7 @@ if __name__ == "__main__":
         RISK_BUDGETS,
         start_date='2020-12-30',
         end_date='2026-04-02',
-        target_volatility=0.02,
+        target_volatility=0.03,
         asset_alternatives=None,
         output_dir='risk_parity_results',
         asset_selection=ASSET_SELECTION,
