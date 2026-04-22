@@ -884,8 +884,8 @@ if __name__ == '__main__':
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2026,1,30)
-    ann_date = datetime.date(2025,6,30)
+    model_date = datetime.date(2026,4,21)
+    ann_date = datetime.date(2025,12,31)
     ###
 
     # # cal & cache factors

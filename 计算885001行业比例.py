@@ -19,20 +19,29 @@ import warnings
 warnings.filterwarnings('ignore')
 import pulp
 
-date = datetime.date(2025,12,31)
+date = datetime.date(2026,3,31)
 
 
 # 根据基准类型生成行业权重
 # 通过 WDS 获取基准指数的行业权重
 dbconn = wind.wind_connectWindDB()
-sql_equity_fund = "select a.F_INFO_WINDCODE, a.S_INFO_SECTOR, b.F_PRT_STKVALUETONAV " \
-                  "from ChinaMutualFundSector a, ChinaMutualFundStockPortfolio b " \
-                  "where a.S_INFO_SECTORENTRYDT <= {0} AND (a.S_INFO_SECTOREXITDT >= {1} OR a.S_INFO_SECTOREXITDT IS NULL) "\
-                  "and a.F_INFO_WINDCODE = b.S_INFO_WINDCODE and b.F_PRT_STKVALUETONAV >= 0.60 "
+sql_equity_fund = """
+    SELECT DISTINCT a.F_INFO_WINDCODE 
+    FROM ChinaMutualFundSector a
+    JOIN ChinaMutualFundStockPortfolio b ON a.F_INFO_WINDCODE = b.S_INFO_WINDCODE
+    WHERE a.S_INFO_SECTORENTRYDT <= '{0}' 
+      AND (a.S_INFO_SECTOREXITDT >= '{1}' OR a.S_INFO_SECTOREXITDT IS NULL)
+      -- 过滤股票市值占比 >= 60%
+      AND b.F_PRT_STKVALUETONAV >= 0.60
+      -- ⚠️ 补充建议：限制投资组合表的报告期，防止拉取历史全部季度导致数据爆炸！
+      -- AND b.F_PRT_ENDDATE <= '{0}' 
+      -- 将原 Pandas 中的行业代码过滤前置到 SQL 的 WHERE 子句
+      AND SUBSTR(a.S_INFO_SECTOR, 1, 10) IN ('2001010101', '2001010201', '2001010204')
+"""
 date_temp = date.strftime("%Y%m%d")
 equity_fund_df = pd.read_sql_query(sql_equity_fund.format(date_temp, date_temp), dbconn)
-equity_fund_df = equity_fund_df[
-    equity_fund_df['s_info_sector'].str[:10].isin(['2001010101', '2001010201', '2001010204'])]
+# equity_fund_df = equity_fund_df[
+#     equity_fund_df['s_info_sector'].str[:10].isin(['2001010101', '2001010201', '2001010204'])]
 
 equity_fund_list = equity_fund_df['f_info_windcode'].unique().tolist()
 # equity_fund_list = pd.read_excel('C:/Users/041685/Desktop/Python代码/基金分类-场内代码清洗/List2_clean.xlsx')
@@ -50,7 +59,7 @@ df_industry = df_industry2_clean.pivot_table(
 ).reset_index()
 # result_industry_sum = pd.pivot_table(df_industry2, columns='industry', index=['report_date', 'product_id'],
 #                                      values='industry_weight', aggfunc='first').fillna(0).reset_index()
-df_industry.to_excel('885001行业比例.xlsx'.format(date.strftime("%Y%m%d")))
+df_industry.to_excel('885001行业比例_{}.xlsx'.format(date.strftime("%Y%m%d")))
 
 non_numeric_cols = ['date', 'product_id']  # 不需要归一化的列
 numeric_cols = df_industry.columns.drop(non_numeric_cols)  # 需要归一化的数值列
