@@ -1326,6 +1326,7 @@ def anlsMF_SelectedRatingIndicator(
         indicator_result.loc['TM_gamma', product] = tm_gamma
         indicator_result.loc['TM_alpha', product] = tm_alpha
         indicator_result.loc['sharpe', product] = basicCal_getSharpeRatio(retDf[product], freq, rf)
+        indicator_result.loc['calmar', product] = basicCal_getCalmarRatio(retDf[product], freq)
         indicator_result.loc['mdd', product] = abs(basicCal_getMaxDrawdown(retDf[product]))  # 使用mdd绝对值，反向指标
         indicator_result.loc['size', product] = latest_aum_info[latest_aum_info['product_id'] == product]['aum'].iloc[0]
         indicator_result.loc['delta_survey_6m', product] = delta_survey_6m[delta_survey_6m['product_id'] == product]['delta_survey'].iloc[0]

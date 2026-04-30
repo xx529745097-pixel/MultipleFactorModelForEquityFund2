@@ -380,12 +380,17 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
             # 定义辅助二进制变量b_i
             b = [pulp.LpVariable(f"b_{i}", cat='Binary') for i in range(n_funds)]
             # 建立权重与二进制的逻辑关系
-            M = 10000  # 足够大的常数（取权重上限值）
+            # M = 10000  # 足够大的常数（取权重上限值）
+            # for i in range(n_funds):
+            #     # 当w_i >0.005时必须b_i=1
+            #     prob += z[i] <= 0.005*30 + M * b[i]
+            #     # 当w_i >=0.005时必须b_i=1（放大判断阈值避免浮点误差）
+            #     prob += z[i] >= 0.005*30 * b[i] - 1e-8
             for i in range(n_funds):
-                # 当w_i >0.005时必须b_i=1
-                prob += z[i] <= 0.005*30 + M * b[i]
-                # 当w_i >=0.005时必须b_i=1（放大判断阈值避免浮点误差）
-                prob += z[i] >= 0.005*30 * b[i] - 1e-8
+                # 上限约束：当 b[i]=1 时，z[i] 最大值为 1.5 (即权重5%)；当 b[i]=0 时，z[i] 必须为 0
+                prob += z[i] <= 1.5 * b[i]
+                # 下限约束：当 b[i]=1 时，z[i] 最小值为 0.15 (即权重0.5%)；当 b[i]=0 时，下限自然为 0
+                prob += z[i] >= 0.15 * b[i]
             # 限制符合条件的基金数量
             prob += pulp.lpSum(b) == 30
 
@@ -454,6 +459,12 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         cbc_path = r"D:/anaconda21/envs/fof_qr/lib/site-packages/pulp/solverdir/cbc/win/i64/cbc.exe"
         solver = pulp.apis.COIN_CMD(path=cbc_path)  # 使用CBC求解器
         prob.solve(solver)
+
+        # 检查求解器状态
+        status = pulp.LpStatus[prob.status]
+        if status != 'Optimal':
+            print(
+                f"警告: 本期优化器未能找到最优解，状态为 [{status}]。这通常是因为偏离度限制过严导致无解，请检查偏离度阈值。")
 
         # 提取结果
         solution = np.array([z[i].varValue for i in range(n_funds)])
@@ -526,9 +537,11 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
                 1 - product_score['jensen_beta']) + product_score['jensen_alpha']
                               + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
-                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
-                              + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
-
+                                  'delta_survey_6m'] + product_score['employee_holding_ratio']/ 9
+    # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
+    #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
+    #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
+    #                               'delta_survey_6m'] + product_score['employee_holding_ratio'])/ 7
     ##  新JW30——000906：
     # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
     #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
@@ -596,6 +609,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     if len(product_score_with_info)> 999:
         product_score_with_info = product_score_with_info[:999]
 
+    # fundlist = product_score_with_info['product_id'].tolist()
     fundlist = product_score_with_info['product_id'].tolist()
 
     if index == '000906.SH':
@@ -636,77 +650,104 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
 
     # 根据基准类型生成行业权重
     elif index == '885001.WI':
-        # 通过 WDS 获取基准指数的行业权重
         dbconn = wind.wind_connectWindDB()
-        sql_equity_fund = "select F_INFO_WINDCODE, S_INFO_SECTOR " \
-                          "from ChinaMutualFundSector " \
-                          "where S_INFO_SECTORENTRYDT <= {0} AND (S_INFO_SECTOREXITDT >= {1} OR S_INFO_SECTOREXITDT IS NULL) "
-        date_temp = ann_date_temp.strftime("%Y%m%d")
-        equity_fund_df = pd.read_sql_query(sql_equity_fund.format(date_temp, date_temp), dbconn)
-        equity_fund_df = equity_fund_df[
-            equity_fund_df['s_info_sector'].str[:10].isin(['2001010101', '2001010201'])]
-        equity_fund_list = equity_fund_df['f_info_windcode'].unique().tolist()
-        date_temp = ann_date_temp
+        date_temp_str = date.strftime("%Y%m%d")
 
-        # 通过 WDS 获取基准指数的行业权重
+        # 1. 使用优化后的SQL提取基金基准成分
+        sql_equity_fund = """
+                SELECT DISTINCT a.F_INFO_WINDCODE 
+                FROM ChinaMutualFundSector a
+                JOIN ChinaMutualFundStockPortfolio b ON a.F_INFO_WINDCODE = b.S_INFO_WINDCODE
+                WHERE a.S_INFO_SECTORENTRYDT <= '{0}' 
+                  AND (a.S_INFO_SECTOREXITDT >= '{1}' OR a.S_INFO_SECTOREXITDT IS NULL)
+                  AND b.F_PRT_STKVALUETONAV >= 0.60
+                  AND SUBSTR(a.S_INFO_SECTOR, 1, 10) IN ('2001010101', '2001010201', '2001010204')
+            """
+        equity_fund_df = pd.read_sql_query(sql_equity_fund.format(date_temp_str, date_temp_str), dbconn)
+        equity_fund_list = equity_fund_df['f_info_windcode'].unique().tolist()
+
+        # -----------------------------------------------------------
+        # 2. 通过拟合获取行业比例 (务必使用 level=1 匹配截面数据维度)
+        # -----------------------------------------------------------
+        df_industry_idx = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, equity_fund_list, 'SW', level=1)
+        df_industry_idx_clean = df_industry_idx[['product_id', 'industry', 'industry_weight']].copy()
+
+        # 透视与归一化
+        df_industry_pivot = df_industry_idx_clean.pivot_table(
+            index='product_id', columns='industry', values='industry_weight', fill_value=0, aggfunc='sum'
+        ).reset_index()
+
+        numeric_cols_idx = df_industry_pivot.columns.drop('product_id')
+        row_sums_idx = df_industry_pivot[numeric_cols_idx].sum(axis=1).replace(0, 1)  # 避免除以0
+
+        df_normalized_idx = df_industry_pivot.copy()
+        df_normalized_idx[numeric_cols_idx] = df_industry_pivot[numeric_cols_idx].div(row_sums_idx, axis=0)
+
+        # 计算所有成分基金的均值，作为 885001 基准的行业权重
+        col_means = df_normalized_idx[numeric_cols_idx].mean()
+        benchmark_industry_weights = pd.DataFrame({
+            'industry': col_means.index,
+            'weight': col_means.values
+        })
+
+        # -----------------------------------------------------------
+        # 3. 计算 Barra 偏离 (继续延用年报/半年报的个股提取以匹配底层Barra暴露计算)
+        # -----------------------------------------------------------
+        date_temp = ann_date_temp
         if len(equity_fund_list) > 502:
             def process_chunks(equity_fund_list, chunk_size=500):
                 All_MF_stockholding = []
                 for i in range(0, len(equity_fund_list), chunk_size):
                     chunk = equity_fund_list[i:i + chunk_size]
                     result = wind.wind_getMFStockHoldings(product_id=chunk, freq='H', Top10=False,
-                                                          start_date=date_temp,
-                                                          end_date=date_temp)
+                                                          start_date=date_temp, end_date=date_temp)
                     All_MF_stockholding.append(result)
-                    # 释放内存
-                    del result
                 return pd.concat(All_MF_stockholding, ignore_index=True)
 
-            # 调用函数
             All_MF_stockholding = process_chunks(equity_fund_list)
         else:
             All_MF_stockholding = wind.wind_getMFStockHoldings(product_id=equity_fund_list, freq='H', Top10=False,
                                                                start_date=date_temp, end_date=date_temp)
-        index_holding = All_MF_stockholding[['stock_id', 'stk_value_to_nav']]
+
+        index_holding = All_MF_stockholding[['stock_id', 'stk_value_to_nav']].copy()
         index_holding = index_holding.groupby('stock_id', as_index=False)['stk_value_to_nav'].sum()
         index_holding.rename(columns={'stk_value_to_nav': 'weight'}, inplace=True)
         index_holding['weight'] = index_holding['weight'] / index_holding['weight'].sum()
-        mapping = wind.wind_getIndustriesMap('SW', 1, date=ann_date_temp).drop(['date'], axis=1)
-        index_holding = pd.merge(index_holding, mapping, on=['stock_id'])
-        benchmark_industry_weights = index_holding.groupby(['industry']).sum().reset_index()
 
         stock_holdings = wind.wind_getMFStockHoldings(fundlist, freq='H', Top10=False,
-                                                      start_date=ann_date_temp,
-                                                      end_date=ann_date_temp)
+                                                      start_date=ann_date_temp, end_date=ann_date_temp)
+
+        # 取最新的 Barra 打分
         stock_barra_temp = stock_barra[stock_barra['date'] <= date]
         max_date = stock_barra_temp["date"].max()
-        stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-        stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'size']
-        size_exposure = stock_barra_temp[['stock_id', 'exposure']]
-        merged_data = pd.merge(index_holding, size_exposure, on='stock_id', how='inner')
-        merged_data['weighted_exposure'] = merged_data['weight'] * merged_data['exposure']
-        index_size_exposure = merged_data['weighted_exposure'].sum()
-        stock_holdings_size = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']], on='stock_id',
+        stock_barra_latest = stock_barra[stock_barra['date'] == max_date]
+
+        # 匹配 Size 因子
+        stock_barra_size = stock_barra_latest[stock_barra_latest['factor'] == 'size']
+        merged_size = pd.merge(index_holding, stock_barra_size[['stock_id', 'exposure']], on='stock_id', how='inner')
+        index_size_exposure = (merged_size['weight'] * merged_size['exposure']).sum()
+
+        stock_holdings_size = pd.merge(stock_holdings, stock_barra_size[['stock_id', 'exposure']], on='stock_id',
                                        how='left')
         stock_holdings_size['exposure'] = np.where(
             (stock_holdings_size['exposure'].isna()) & (stock_holdings_size['stock_market'] == 'A'), -3,
             np.where(stock_holdings_size['exposure'].isna(), 0, stock_holdings_size['exposure']))
-        stock_barra_temp = stock_barra[stock_barra['date'] <= date]
-        max_date = stock_barra_temp["date"].max()
-        stock_barra_temp = stock_barra[stock_barra['date'] == max_date]
-        stock_barra_temp = stock_barra_temp[stock_barra_temp['factor'] == 'sizenl']
-        sizenl_exposure = stock_barra_temp[['stock_id', 'exposure']]
-        merged_data = pd.merge(index_holding, sizenl_exposure, on='stock_id', how='inner')
-        merged_data['weighted_exposure'] = merged_data['weight'] * merged_data['exposure']
-        index_sizenl_exposure = merged_data['weighted_exposure'].sum()
-        stock_holdings_sizenl = pd.merge(stock_holdings, stock_barra_temp[['stock_id', 'exposure']], on='stock_id',
+
+        # 匹配 SizeNL 因子
+        stock_barra_sizenl = stock_barra_latest[stock_barra_latest['factor'] == 'sizenl']
+        merged_sizenl = pd.merge(index_holding, stock_barra_sizenl[['stock_id', 'exposure']], on='stock_id',
+                                 how='inner')
+        index_sizenl_exposure = (merged_sizenl['weight'] * merged_sizenl['exposure']).sum()
+
+        stock_holdings_sizenl = pd.merge(stock_holdings, stock_barra_sizenl[['stock_id', 'exposure']], on='stock_id',
                                          how='left')
         stock_holdings_sizenl['exposure'] = np.where(
             (stock_holdings_sizenl['exposure'].isna()) & (stock_holdings_sizenl['stock_market'] == 'A'), -3,
             np.where(stock_holdings_sizenl['exposure'].isna(), 0, stock_holdings_sizenl['exposure']))
+
         index_barra_temp = pd.DataFrame({
-            'size': [index_size_exposure],  # 计算得到的 Barra Size 暴露
-            'sizenl': [index_sizenl_exposure],  #
+            'size': [index_size_exposure],
+            'sizenl': [index_sizenl_exposure],
         })
 
     # 通过 WDS 获取基金行业信息
@@ -719,7 +760,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     #     Top10=False,  # Top10为是否仅取季报前十大持仓
     #     IndustrytoStkValue=True  # False:行业占基金净值比；True:行业占股票市值比
     # )
-    df_industry2 = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, fundlist, 'SW', level = 2)
+    df_industry2 = MFanls.anlsMF_getMFSimHoldingIndustryExposure(date, fundlist, 'SW', level = 1)
     df_industry2_clean = df_industry2[['product_id', 'industry', 'industry_weight', 'report_date']].copy()
     df_industry2_clean.rename(columns={'report_date': 'date'}, inplace=True)
     df_industry2_clean['date'] = pd.to_datetime(df_industry2_clean['date'])
@@ -884,7 +925,7 @@ if __name__ == '__main__':
     model_freq = 'Q'  # 调仓频率 暂仅支持Q\W
 
     ### 如果希望在指定日期运算，请运行以下代码
-    model_date = datetime.date(2026,4,21)
+    model_date = datetime.date(2026,4,30)
     ann_date = datetime.date(2025,12,31)
     ###
 
@@ -909,7 +950,7 @@ if __name__ == '__main__':
     # 基金选择
     print(model_date)
     fstrat_getCC30ModelFinalProductList_changeable_diviation(model_date, ann_date, model_freq=model_freq, shortlist_num=30, buffer_size=0,excess_drawdown_threshold=100,
-                                                                 original_ind_deviation=0.01, original_deviation=0.3, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
+                                                                 original_ind_deviation=0.03, original_deviation=0.5, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = False )
     # model_start_date = datetime.date(2022,10,31)
 
