@@ -537,7 +537,8 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
                 1 - product_score['jensen_beta']) + product_score['jensen_alpha']
                               + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[
-                                  'delta_survey_6m'] + product_score['employee_holding_ratio']/ 9
+                                  'delta_survey_6m'] + product_score['employee_holding_ratio']
+                               + (1 - product_score['tracking_error_885001']) + (1 - product_score['vol_nl'])) / 9
     # product_score['score'] = (product_score['sharpe'] + 0.5 * (1 - product_score['mdd']) + 0.5 * (
     #             1 - product_score['jensen_beta']) + product_score['jensen_alpha']
     #                           + product_score['TM_gamma'] + (1 - product_score['size']) + product_score[

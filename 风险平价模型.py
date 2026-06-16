@@ -241,8 +241,10 @@ def risk_parity_backtest(risk_budgets, start_date, end_date, target_volatility,
 
     for i, date in enumerate(backtest_daily_returns.index):
         if date in compute_dates:
-            current_period = date.to_period('M')
-            month_end_date = month_end_dict[current_period]
+            # 修复：获取当前计算日期之前的、主数据表中的上个月最后一个交易日
+            # 确保计算基准日是固定的历史时间点
+            last_month_end = master_df.index[master_df.index < date][-1]
+            month_end_date = last_month_end
 
             selected_assets = []
             if asset_class_mapping and asset_selection:
@@ -368,7 +370,7 @@ if __name__ == "__main__":
     net_value, daily_weights, monthly_weights = risk_parity_backtest(
         RISK_BUDGETS,
         start_date='2020-12-30',
-        end_date='2026-04-02',
+        end_date='2026-05-07',
         target_volatility=0.03,
         asset_alternatives=None,
         output_dir='risk_parity_results',

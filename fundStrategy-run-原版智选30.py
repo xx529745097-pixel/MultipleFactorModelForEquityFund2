@@ -574,9 +574,10 @@ def fstrat_getCC30ProductScore_money(
     product_score.to_excel(cc30_run_path+"货基因子打分_{}.xlsx".format(date), index=None)
     return product_score
 
+
 # -----------------------------------------
 # 回测缓存CC30模型的最终产品清单
-# 设置缓冲池，每位PM仅保留一个产品   货基
+# 设置缓冲池，每位PM组合仅保留一个产品   货基
 # -----------------------------------------
 def fstrat_getCC30ModelFinalProductList_money(
         date,  # 考察日期 需为模型运行日期
@@ -620,105 +621,84 @@ def fstrat_getCC30ModelFinalProductList_money(
     fund_universe = pd.read_excel(fund_universe_path)
     fund_universe['date'] = pd.to_datetime(fund_universe['date']).dt.date
 
+    # ==========================================
+    # 【去重步骤 1】：对基金ID去重，合并所有基金经理
+    # 逻辑：使用sorted排序，确保“A,B”和“B,A”经理组合被识别为完全相同
+    # ==========================================
+    fund_universe_agg = fund_universe.groupby('product_id', sort=False).agg({
+        'date': 'first',
+        'product_name': 'first',
+        'pm_name': lambda x: ', '.join(sorted(x.dropna().astype(str).unique()))
+    }).reset_index()
+
     # 4. 读取当期的打分结果
     current_fund_score_path = cc30_run_path + "货基因子打分_{}.xlsx".format(date)
     assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"
     product_score = pd.read_excel(current_fund_score_path)
 
-    # 5. 模型策略部分 因子权重
+    # 5. 模型策略部分 计算得分
     product_score['score'] = (0.5 * product_score['seven_day_sharpe'] +
                               0.5 * product_score['stability'])
 
-    # 将基本信息与打分合并，保留原始未去重文件以便排查
-    product_score_with_info = pd.merge(fund_universe, product_score, on='product_id', how='left').sort_values('score',
-                                                                                                              ascending=False)
-    # product_score_with_info.to_excel("模型输出结果/智选30-基金打分结果(不去重版)_{}.xlsx".format(date))
+    # 将基本信息与打分合并
+    df_merged = pd.merge(fund_universe_agg, product_score, on='product_id', how='left')
+    # 先按得分降序排列
+    df_merged = df_merged.sort_values('score', ascending=False).reset_index(drop=True)
 
     # ==========================================
-    # 【功能 2】：对基金去重，基金经理显示为所有基金经理
+    # 【去重步骤 2】：对“经理团队完全相同”的产品去重
+    # 逻辑：在打分后保留该团队组合中分数最高的那只基金
     # ==========================================
-    # 通过 groupby 将相同产品的多位基金经理用逗号连接起来，保证每只产品只有唯一一行
-    df_agg = product_score_with_info.groupby('product_id', sort=False).agg({
-        'date': 'first',
-        'product_name': 'first',
-        'score': 'first',
-        'pm_name': lambda x: ', '.join(x.dropna().unique())
-    }).reset_index()
-    # 再次严格按照打分倒序排列
-    df_agg = df_agg.sort_values('score', ascending=False).reset_index(drop=True)
+    df_agg = df_merged.drop_duplicates(subset=['pm_name'], keep='first').reset_index(drop=True)
+
+    # 导出完全去重后的打分表以便排查
+    df_agg.to_excel("模型输出结果/货基-基金打分结果(完全去重版)_{}.xlsx".format(date))
 
     # -------------------
-    # 生成最终名单 (缓冲池 + 同基金经理去重 + 等权)
+    # 生成最终名单 (缓冲池优先保留 + 顺延递补 + 等权)
     # -------------------
-    # 提取排名前 buffer_size 的 product_id 列表
+    # 提取去重后池子中排名前 buffer_size 的 product_id
     buffered_product_ids = df_agg['product_id'].tolist()[:buffer_size]
 
-    # 检查上期持仓中有哪些基金成功留在了当期前 buffer_size 内
+    # 检查上期持仓中有哪些基金留在了当期前 buffer_size 内
     retained_product_ids = previous_shortlist_res[previous_shortlist_res['product_id'].isin(buffered_product_ids)][
         'product_id'].to_list()
 
-    # 获取这批保留基金的完整信息
+    # 获取保留基金的完整信息
     retained_df = df_agg[df_agg['product_id'].isin(retained_product_ids)]
 
-    # 记录已经被选中的基金经理名单（为了后续的基金经理去重做准备）
-    seen_pms = set()
-    for pms_str in retained_df['pm_name']:
-        if pd.notna(pms_str):
-            # 将多基金经理字符串拆解后放入集合
-            seen_pms.update([pm.strip() for pm in str(pms_str).split(',')])
-
-    # 计算距离目标 shortlist_num 还需要再选几只
+    # 计算还需要再补选几只
     needed_num = shortlist_num - len(retained_df)
 
-    # ==========================================
-    # 【功能 1】：出名单前对同基金经理的基金去重
-    # ==========================================
-    new_selected_list = []
+    # 从去重池子中剔除已保留的基金
     pool_exclude_retained = df_agg[~df_agg['product_id'].isin(retained_product_ids)]
 
-    # 遍历剩下的基金池，顺延选拔
-    for _, row in pool_exclude_retained.iterrows():
-        if needed_num <= 0:
-            break
+    # 按照打分顺延截取
+    if needed_num > 0:
+        new_selected_df = pool_exclude_retained.head(needed_num)
+    else:
+        new_selected_df = pd.DataFrame(columns=retained_df.columns)
 
-        # 提取当前这只基金所有的基金经理
-        current_pms_str = row['pm_name']
-        current_pms = set([pm.strip() for pm in str(current_pms_str).split(',')]) if pd.notna(
-            current_pms_str) else set()
-
-        # 核心去重逻辑：如果这只基金的【任何一位】基金经理已经存在于 seen_pms 集合中，则跳过该基金
-        if not current_pms.isdisjoint(seen_pms):
-            continue
-
-        # 满足条件，入选！
-        new_selected_list.append(row)
-        # 将该基金的所有基金经理加入已选集合中，阻断他们入选下一只产品的机会
-        seen_pms.update(current_pms)
-        needed_num -= 1
-
-    # 将新入选的字典列表转回 DataFrame
-    new_selected_df = pd.DataFrame(new_selected_list) if new_selected_list else pd.DataFrame(
-        columns=retained_df.columns)
-
-    # 拼接保留名单与新入选名单，形成最终的 shortlist_num 只基金
+    # 拼接保留名单与新入选名单
     final_fund_result = pd.concat([retained_df, new_selected_df], axis=0).reset_index(drop=True)
 
-    # 强制等权分配 (1/30)
+    # 强制等权分配 (1/shortlist_num)
     final_fund_result['weight'] = 1.0 / shortlist_num
 
-    # 提取需要的标准字段
+    # 提取标准字段
     final_fund_result = final_fund_result[['date', 'product_id', 'product_name', 'pm_name', 'score', 'weight']]
 
     # -------------------
     # 输出和收尾工作
     # -------------------
-    # 计算每只基金当前期的真实打分排名
-    product_score = product_score.sort_values('score', ascending=False).reset_index(drop=True).reset_index().rename(
+    # 计算全池真实的打分排名（基于去重后的池子）
+    rank_df = df_agg[['product_id', 'score']].sort_values('score', ascending=False).reset_index(
+        drop=True).reset_index().rename(
         columns={'index': 'rank'})
-    product_score = product_score.drop(columns=['score'])
+    rank_df = rank_df.drop(columns=['score'])
 
-    # 左连接合并全部因子打分详情
-    shortlist_res = pd.merge(final_fund_result, product_score, on='product_id', how='left')
+    # 合并打分排名详情
+    shortlist_res = pd.merge(final_fund_result, rank_df, on='product_id', how='left')
 
     # 反向因子重命名操作
     rename_cols = {
@@ -734,7 +714,6 @@ def fstrat_getCC30ModelFinalProductList_money(
     shortlist_res.to_excel(cc30_run_path + "智选30-货币基金选择_{}.xlsx".format(date))
 
     return shortlist_res
-
 
 
 #############################################################################################
@@ -855,25 +834,12 @@ import numpy as np
 import os
 import datetime
 
-
-# 如果有未使用的 wind / fstrat 模块可以酌情在顶部保留或删除
-
-import pandas as pd
-import numpy as np
-import os
-import datetime
-
-import pandas as pd
-import numpy as np
-import os
-import datetime
-
-
 # -----------------------------------------
 # 回测缓存CC30模型的最终产品清单
 # 设置缓冲池，读取上期名单并在buffer内保留，30只等权
-# 功能1：对基金经理去重（每位PM仅保留一只产品）
-# 功能2：对基金去重（相同基金合并展示所有基金经理）
+# 功能1：对基金去重（相同产品合并展示所有基金经理，按字母/拼音排序保证标识唯一）
+# 功能2：对完全相同的基金经理团队去重（保留该团队下打分最高的一只产品）
+# 注：所有去重动作均在生成最终选拔名单前完成
 # -----------------------------------------
 def fstrat_getCC30ModelFinalProductList_changeable_diviation(
         date,  # 考察日期 需为模型运行日期
@@ -917,36 +883,44 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     fund_universe = pd.read_excel(fund_universe_path)
     fund_universe['date'] = pd.to_datetime(fund_universe['date']).dt.date
 
+    # ==========================================
+    # 【去重步骤 1】：对同一只基金去重，合并显示所有基金经理
+    # ==========================================
+    # 加入 sorted() 确保基金经理顺序一致 (如"张三, 李四"与"李四, 张三"统一为同一种表述)
+    fund_universe_agg = fund_universe.groupby('product_id', sort=False).agg({
+        'date': 'first',
+        'product_name': 'first',
+        'pm_name': lambda x: ', '.join(sorted(x.dropna().astype(str).unique()))
+    }).reset_index()
+
     # 4. 读取当期的打分结果
     current_fund_score_path = cc30_run_path + "因子打分_{}.xlsx".format(date)
     assert os.path.exists(current_fund_score_path), f"未找到{current_fund_score_path}，请先缓存当期打分结果"
     product_score = pd.read_excel(current_fund_score_path)
 
-    # 5. 模型策略部分 因子权重
+    # 5. 模型策略部分 因子权重计算
     product_score['score'] = (0.2 * product_score['jensen_beta'] + 0.4 * product_score['sharpe'] +
                               0.1 * product_score['TM_gamma'] + 0.1 * product_score['TM_alpha'] +
                               0.2 * product_score['stability'])
 
-    # 将基本信息与打分合并，保留原始未去重文件以便排查
-    product_score_with_info = pd.merge(fund_universe, product_score, on='product_id', how='left').sort_values('score',
-                                                                                                              ascending=False)
-    product_score_with_info.to_excel("模型输出结果/智选30-基金打分结果(不去重版)_{}.xlsx".format(date))
+    # 将去重后的基金基本信息与打分合并
+    df_agg = pd.merge(fund_universe_agg, product_score, on='product_id', how='left')
 
-    # ==========================================
-    # 【功能 2】：对基金去重，基金经理显示为所有基金经理
-    # ==========================================
-    # 通过 groupby 将相同产品的多位基金经理用逗号连接起来，保证每只产品只有唯一一行
-    df_agg = product_score_with_info.groupby('product_id', sort=False).agg({
-        'date': 'first',
-        'product_name': 'first',
-        'score': 'first',
-        'pm_name': lambda x: ', '.join(x.dropna().unique())
-    }).reset_index()
-    # 再次严格按照打分倒序排列
+    # 按照综合打分倒序排列
     df_agg = df_agg.sort_values('score', ascending=False).reset_index(drop=True)
 
+    # ==========================================
+    # 【去重步骤 2】：对“基金经理团队完全相同”的产品去重
+    # ==========================================
+    # 此时 df_agg 已按打分倒序排列，drop_duplicates 默认 keep='first'
+    # 即可完美剔除完全相同基金经理团队的多余产品，仅保留该团队打分最高的那一只
+    df_agg = df_agg.drop_duplicates(subset=['pm_name'], keep='first').reset_index(drop=True)
+
+    # 导出文件供排查（此时的池子已经是完全去重且排好序的纯净池）
+    df_agg.to_excel("模型输出结果/智选30-基金打分结果(完全去重版)_{}.xlsx".format(date))
+
     # -------------------
-    # 生成最终名单 (缓冲池 + 同基金经理去重 + 等权)
+    # 生成最终名单 (缓冲池优先保留 + 顺延递补 + 等权)
     # -------------------
     # 提取排名前 buffer_size 的 product_id 列表
     buffered_product_ids = df_agg['product_id'].tolist()[:buffer_size]
@@ -958,45 +932,20 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     # 获取这批保留基金的完整信息
     retained_df = df_agg[df_agg['product_id'].isin(retained_product_ids)]
 
-    # 记录已经被选中的基金经理名单（为了后续的基金经理去重做准备）
-    seen_pms = set()
-    for pms_str in retained_df['pm_name']:
-        if pd.notna(pms_str):
-            # 将多基金经理字符串拆解后放入集合
-            seen_pms.update([pm.strip() for pm in str(pms_str).split(',')])
-
     # 计算距离目标 shortlist_num 还需要再选几只
     needed_num = shortlist_num - len(retained_df)
 
     # ==========================================
-    # 【功能 1】：出名单前对同基金经理的基金去重
+    # 递补剩余名额
     # ==========================================
-    new_selected_list = []
+    # 从已经去重且排好序的打分表中剔除掉已经保留的基金
     pool_exclude_retained = df_agg[~df_agg['product_id'].isin(retained_product_ids)]
 
-    # 遍历剩下的基金池，顺延选拔
-    for _, row in pool_exclude_retained.iterrows():
-        if needed_num <= 0:
-            break
-
-        # 提取当前这只基金所有的基金经理
-        current_pms_str = row['pm_name']
-        current_pms = set([pm.strip() for pm in str(current_pms_str).split(',')]) if pd.notna(
-            current_pms_str) else set()
-
-        # 核心去重逻辑：如果这只基金的【任何一位】基金经理已经存在于 seen_pms 集合中，则跳过该基金
-        if not current_pms.isdisjoint(seen_pms):
-            continue
-
-        # 满足条件，入选！
-        new_selected_list.append(row)
-        # 将该基金的所有基金经理加入已选集合中，阻断他们入选下一只产品的机会
-        seen_pms.update(current_pms)
-        needed_num -= 1
-
-    # 将新入选的字典列表转回 DataFrame
-    new_selected_df = pd.DataFrame(new_selected_list) if new_selected_list else pd.DataFrame(
-        columns=retained_df.columns)
+    # 顺延截取头部 needed_num 只
+    if needed_num > 0:
+        new_selected_df = pool_exclude_retained.head(needed_num)
+    else:
+        new_selected_df = pd.DataFrame(columns=retained_df.columns)
 
     # 拼接保留名单与新入选名单，形成最终的 shortlist_num 只基金
     final_fund_result = pd.concat([retained_df, new_selected_df], axis=0).reset_index(drop=True)
@@ -1032,6 +981,7 @@ def fstrat_getCC30ModelFinalProductList_changeable_diviation(
     shortlist_res.to_excel(cc30_run_path + "智选30-基金选择_{}.xlsx".format(date))
 
     return shortlist_res
+
 
 #############################################################################################
 #以上为xjw改动部分
@@ -1139,8 +1089,8 @@ if __name__ == '__main__':
     ###
 
     # # cal & cache factors
-    print(model_date)
-    fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='885001.WI', rf=0.03)
+    # print(model_date)
+    # fstrat_getCC30ProductScore(date=model_date, model_freq=model_freq, benchmark='885001.WI', rf=0.03)
 
     # shortlist & cache final 30-products res from cached files
 
@@ -1169,7 +1119,7 @@ if __name__ == '__main__':
     #                                                              stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )
 
     ####货基 每季度跑一次
-    fstrat_getCC30ProductScore_money(date=model_date, model_freq=model_freq, benchmark='885008.WI', rf=0.03)
+    # fstrat_getCC30ProductScore_money(date=model_date, model_freq=model_freq, benchmark='885008.WI', rf=0.03)
     fstrat_getCC30ModelFinalProductList_money(model_date, ann_date, model_freq=model_freq, shortlist_num=20, buffer_size=60,excess_drawdown_threshold=100,
                                                                  original_ind_deviation=100, original_deviation=100, temp_ind_deviation=100,temp_deviation=100, index='885001.WI', index_delay=1,
                                                                  stock_barra=stock_barra, index_barra=index_barra,  equal_weight = True )

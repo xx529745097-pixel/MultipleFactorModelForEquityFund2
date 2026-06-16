@@ -61,6 +61,10 @@ df_industry = df_industry2_clean.pivot_table(
 #                                      values='industry_weight', aggfunc='first').fillna(0).reset_index()
 df_industry.to_excel('885001行业比例_{}.xlsx'.format(date.strftime("%Y%m%d")))
 
+
+
+
+
 non_numeric_cols = ['date', 'product_id']  # 不需要归一化的列
 numeric_cols = df_industry.columns.drop(non_numeric_cols)  # 需要归一化的数值列
 
